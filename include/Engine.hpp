@@ -1,4 +1,5 @@
 #pragma once
+#include "EmbedLookup.hpp"
 #include "GGUF.hpp"
 #include "Tokenizer.hpp"
 #include "ChatFormatter.hpp"
@@ -14,9 +15,12 @@ private:
     GGUF gguf;
     Tokenizer tokenizer;
     ChatFormatter chat_formatter;
+    EmbedLookup embedlookup; 
+    
     std::map<std::string, Weight> weights;
-    std::vector<int32_t> chat_session;
-    int32_t eos_token;
+    std::vector<uint32_t> chat_session;
+    uint32_t eos_token;
     std::mt19937 random{std::random_device{}()};
-    int32_t simulate_inference();
+    uint32_t simulate_inference();
+    uint32_t inference(); 
 };

@@ -24,7 +24,7 @@ std::string ChatFormatter::render(const std::vector<ChatMessage>& messages,
     auto input = Json::array();
     for (const auto& message : messages) {
         if (message.role != "system" && message.role != "user" && message.role != "assistant")
-            throw std::invalid_argument("Basic chat \ system, user and assistant roles");
+            throw std::invalid_argument("Basic chat system, user and assistant roles");
         input.push_back({{"role", message.role}, {"content", message.content}});
     }
     auto context = minja::Context::make(minja::Value(Json{

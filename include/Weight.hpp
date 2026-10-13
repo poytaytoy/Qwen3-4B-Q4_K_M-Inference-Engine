@@ -10,6 +10,7 @@ struct DeviceBuffer{
 
     // Allocates device memory and copies bytes from a host pointer.
     DeviceBuffer(const void* source, std::size_t bytes);
+    explicit DeviceBuffer(std::size_t bytes);
     ~DeviceBuffer();
     
     DeviceBuffer(const DeviceBuffer& other) = delete; 
@@ -20,10 +21,8 @@ struct DeviceBuffer{
 };
 
 struct Weight {
-    enum class DataType { Q6_K, F32, Q4_K };
-
     std::string name; 
-    DataType datatype; 
+    ggml_type datatype; 
     DeviceBuffer device_buffer{nullptr, 0};
     std::vector<std::int64_t> dimension; 
 

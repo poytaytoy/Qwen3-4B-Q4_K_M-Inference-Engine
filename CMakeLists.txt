@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.18)
 project(InferenceEngine LANGUAGES C CXX CUDA)
 
 find_package(CUDAToolkit REQUIRED)
+find_package(OpenMP REQUIRED COMPONENTS CXX)
 
 include(FetchContent)
 
@@ -68,4 +69,4 @@ set_target_properties(inference_engine PROPERTIES
     CUDA_STANDARD_REQUIRED ON
 )
 
-target_link_libraries(inference_engine PRIVATE ggml-base pcre2-8 ICU::uc CUDA::cudart minja)
+target_link_libraries(inference_engine PRIVATE ggml-base pcre2-8 ICU::uc CUDA::cudart minja OpenMP::OpenMP_CXX)

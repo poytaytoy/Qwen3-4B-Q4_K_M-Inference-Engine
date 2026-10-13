@@ -65,12 +65,14 @@ public:
     const Metadata* get_metadata(const std::string& key) const;
     // Descriptions of every tensor in the file.
     const std::vector<TensorInfo>& get_tensors() const { return tensors_; }
-    // Description of a named tensor; nullptr if absent.
+    // Description of a named tensor; throws std::runtime_error if absent.
     const TensorInfo* get_tensor_info(const std::string& name) const;
     // Loaded tensor; nullptr if absent or weights were not loaded.
     const ggml_tensor* get_tensor(const std::string& name) const;
     // Borrowed raw weight bytes, not necessarily floats. Throws if weights are unavailable or name is absent.
     std::span<const std::byte> get_tensor_data(const std::string& name) const;
+    // Reads just one tensor from disk. The caller owns the returned CPU buffer.
+    std::vector<std::byte> read_tensor_data(const std::string& name) const;
 
     // Missing keys or mismatched types return nullopt/nullptr.
     // Read a scalar with its exact stored C++ type, e.g. get_value<uint32_t>(key).
@@ -113,6 +115,8 @@ public:
     std::optional<uint32_t> get_bos_token_id() const;
     // ID of the end-of-sequence token.
     std::optional<uint32_t> get_eos_token_id() const;
+    //frees all weights 
+    void free_weights(); 
 
 private:
     // Looks up an architecture-specific key, e.g. llama.block_count.

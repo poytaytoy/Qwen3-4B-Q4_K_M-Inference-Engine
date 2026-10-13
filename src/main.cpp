@@ -8,7 +8,9 @@ int main(int argc, char* argv[]) {
         std::cout << "Mock inference enabled.\n";
         std::string input;
         while (std::cout << "User: " && std::getline(std::cin, input)) {
-            std::cout << "Assistant: " << engine.run({{"user", input}}) << '\n';
+            std::cout << "Assistant: ";
+            engine.run({{"user", input}});
+            std::cout << '\n';
         }
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

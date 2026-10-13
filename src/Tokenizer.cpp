@@ -50,7 +50,7 @@ Tokenizer::Tokenizer(const GGUF& model)
         throw std::invalid_argument("Tokenizer requires gpt2 / qwen2 GGUF metadata");
     
     if (tokens.empty() || tokens.size() != token_types.size() ||
-        tokens.size() > static_cast<size_t>(std::numeric_limits<int32_t>::max()))
+        tokens.size() > static_cast<size_t>(std::numeric_limits<uint32_t>::max()))
         throw std::invalid_argument("Invalid Qwen vocabulary or token types");
     
     for (auto id : {bos_token_id, eos_token_id})
@@ -74,12 +74,12 @@ void Tokenizer::build_lookups() {
     token_map.reserve(tokens.size());
     special_ids.resize(tokens.size());
     for (size_t i = 0; i < tokens.size(); ++i) {
-        token_map.emplace(tokens[i], static_cast<int32_t>(i));
+        token_map.emplace(tokens[i], static_cast<uint32_t>(i));
         // GGUF control tokens are special; user-defined tokens are atomic added tokens.
         special_ids[i] = token_types[i] == 3;
         if (token_types[i] == 3 || token_types[i] == 4) {
             if (tokens[i].empty()) throw std::invalid_argument("Empty reserved token");
-            reserved_ids.push_back(static_cast<int32_t>(i));
+            reserved_ids.push_back(static_cast<uint32_t>(i));
         }
     }
     for (size_t i = 0; i < merges.size(); ++i) {
@@ -129,7 +129,7 @@ std::string Tokenizer::decode_bytes(const std::string& text) const {
     }
     return out;
 }
-std::vector<int32_t> Tokenizer::apply_bpe(const std::string& encoded_chunk) const {
+std::vector<uint32_t> Tokenizer::apply_bpe(const std::string& encoded_chunk) const {
     auto pieces = symbols(encoded_chunk);
     while (pieces.size() > 1) {
         size_t best = std::numeric_limits<size_t>::max();
@@ -147,7 +147,7 @@ std::vector<int32_t> Tokenizer::apply_bpe(const std::string& encoded_chunk) cons
         }
         pieces = std::move(next);
     }
-    std::vector<int32_t> ids;
+    std::vector<uint32_t> ids;
     for (const auto& piece : pieces) {
         auto it = token_map.find(piece);
         if (it == token_map.end()) throw std::runtime_error("BPE piece missing from vocabulary");
@@ -155,56 +155,68 @@ std::vector<int32_t> Tokenizer::apply_bpe(const std::string& encoded_chunk) cons
     }
     return ids;
 }
-std::vector<int32_t> Tokenizer::encode_ordinary(const std::string& text) const {
-    std::vector<int32_t> ids;
+std::vector<uint32_t> Tokenizer::encode_ordinary(const std::string& text) const {
+    std::vector<uint32_t> ids;
     for (const auto& chunk : pre_tokenize(normalize_nfc(text))) {
         auto part = apply_bpe(encode_bytes(chunk));
         ids.insert(ids.end(), part.begin(), part.end());
     }
     return ids;
 }
-std::vector<int32_t> Tokenizer::encode_with_special_tokens(const std::string& text) const {
-    std::vector<int32_t> ids;
+std::vector<uint32_t> Tokenizer::encode_with_special_tokens(const std::string& text) const {
+    std::vector<uint32_t> ids;
     size_t start = 0;
     while (start < text.size()) {
         size_t position = std::string::npos;
-        int32_t selected = -1;
+        std::optional<uint32_t> selected;
         for (auto id : reserved_ids) {
             auto found = text.find(tokens[id], start);
             if (found != std::string::npos && (found < position ||
-                (found == position && (selected < 0 || tokens[id].size() > tokens[selected].size())))) {
+                (found == position && (!selected || tokens[id].size() > tokens[*selected].size())))) {
                 position = found; selected = id;
             }
         }
         auto ordinary = encode_ordinary(text.substr(start,
             position == std::string::npos ? position : position - start));
         ids.insert(ids.end(), ordinary.begin(), ordinary.end());
-        if (selected < 0) break;
-        ids.push_back(selected);
-        start = position + tokens[selected].size();
+        if (!selected) break;
+        ids.push_back(*selected);
+        start = position + tokens[*selected].size();
     }
     return ids;
 }
-std::vector<int32_t> Tokenizer::encode(const std::string& text, bool allow_special) const {
+std::vector<uint32_t> Tokenizer::encode(const std::string& text, bool allow_special) const {
     auto ids = allow_special ? encode_with_special_tokens(text) : encode_ordinary(text);
     add_sequence_tokens(ids);
     return ids;
 }
-bool Tokenizer::is_special_token(int32_t id) const {
-    if (id < 0 || static_cast<size_t>(id) >= tokens.size()) throw std::out_of_range("Invalid token ID");
+bool Tokenizer::is_special_token(uint32_t id) const {
+    if (static_cast<size_t>(id) >= tokens.size()) throw std::out_of_range("Invalid token ID");
     return special_ids[id];
 }
-void Tokenizer::add_sequence_tokens(std::vector<int32_t>& ids) const {
-    if (add_bos_token) ids.insert(ids.begin(), static_cast<int32_t>(*bos_token_id));
-    if (add_eos_token) ids.push_back(static_cast<int32_t>(*eos_token_id));
+void Tokenizer::add_sequence_tokens(std::vector<uint32_t>& ids) const {
+    if (add_bos_token) ids.insert(ids.begin(), static_cast<uint32_t>(*bos_token_id));
+    if (add_eos_token) ids.push_back(static_cast<uint32_t>(*eos_token_id));
 }
-std::string Tokenizer::decode(const std::vector<int32_t>& ids, bool skip_special) const {
+
+std::string Tokenizer::decode(uint32_t id, bool skip_special) const {
     std::string out;
+    
+    const bool special = is_special_token(id); // Also validates the ID.
+    if (special || token_types[id] == 4) out += tokens[id];
+    else out += decode_bytes(tokens[id]);
+    
+    return out;
+}
+
+std::string Tokenizer::decode(const std::vector<uint32_t>& ids, bool skip_special) const {
+    std::string out;
+
+    #pragma omp parallel for schedule(static)
     for (auto id : ids) {
-        const bool special = is_special_token(id); // Also validates the ID.
-        if (special && skip_special) continue;
-        if (special || token_types[id] == 4) out += tokens[id];
-        else out += decode_bytes(tokens[id]);
+        out += Tokenizer::decode(id, skip_special); 
     }
     return out;
 }
+
+

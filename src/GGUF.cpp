@@ -1,4 +1,6 @@
 #include "GGUF.hpp"
+#include <fstream>
+#include <limits>
 
 #include <algorithm>
 #include <cstring>
@@ -119,11 +121,29 @@ const GGUF::Metadata* GGUF::get_metadata(const std::string& key) const {
 const GGUF::TensorInfo* GGUF::get_tensor_info(const std::string& name) const {
     const auto it = std::find_if(tensors_.begin(), tensors_.end(),
         [&](const TensorInfo& tensor) { return tensor.name == name; });
-    return it == tensors_.end() ? nullptr : &*it;
+    if (it == tensors_.end()) throw std::runtime_error("Tensor unavailable: " + name);
+    return &*it;
 }
 const ggml_tensor* GGUF::get_tensor(const std::string& name) const {
     return weights_ ? ggml_get_tensor(weights_.get(), name.c_str()) : nullptr;
 }
+std::vector<std::byte> GGUF::read_tensor_data(const std::string& name) const {
+    const auto* info = get_tensor_info(name);
+    std::ifstream file(path_, std::ios::binary | std::ios::ate);
+    if (!file) throw std::runtime_error("Failed to open GGUF: " + path_.string());
+    const auto end = file.tellg();
+    if (end < 0 || info->file_offset > static_cast<uint64_t>(end) ||
+        info->bytes > static_cast<uint64_t>(end) - info->file_offset)
+        throw std::runtime_error("Incomplete GGUF tensor data: " + name);
+    if (info->bytes > static_cast<size_t>(std::numeric_limits<std::streamsize>::max()))
+        throw std::runtime_error("Tensor too large to read: " + name);
+    file.seekg(static_cast<std::streamoff>(info->file_offset));
+    std::vector<std::byte> data(info->bytes);
+    if (!file.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size())))
+        throw std::runtime_error("Failed to read tensor: " + name);
+    return data;
+}
+
 std::span<const std::byte> GGUF::get_tensor_data(const std::string& name) const {
     if (!weights_) throw std::logic_error("Construct GGUF with load_weights=true to access weights");
     const auto* tensor = get_tensor(name);
@@ -147,3 +167,8 @@ const std::vector<int32_t>& GGUF::get_token_types() const { return known_array<i
 const std::vector<std::string>& GGUF::get_merges() const { return known_array<std::string>(*this, "tokenizer.ggml.merges"); }
 std::optional<uint32_t> GGUF::get_bos_token_id() const { return get_value<uint32_t>("tokenizer.ggml.bos_token_id"); }
 std::optional<uint32_t> GGUF::get_eos_token_id() const { return get_value<uint32_t>("tokenizer.ggml.eos_token_id"); }
+
+// Add this public method to GGUF:
+void GGUF::free_weights() {
+    weights_.reset(); // Calls ggml_free()
+}

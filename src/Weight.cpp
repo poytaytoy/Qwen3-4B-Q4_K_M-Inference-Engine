@@ -23,6 +23,15 @@ DeviceBuffer::DeviceBuffer(const void* source, std::size_t source_bytes) {
     bytes = source_bytes;
 }
 
+DeviceBuffer::DeviceBuffer(std::size_t source_bytes){
+    if (source_bytes == 0) return;
+    
+    cudaError_t error = cudaMalloc(&data, source_bytes);
+    if (error != cudaSuccess) {
+        throw std::runtime_error(std::string("cudaMalloc failed: ") + cudaGetErrorString(error));
+    }
+}
+
 DeviceBuffer::~DeviceBuffer() {
     if (data) cudaFree(data);
 }
@@ -42,19 +51,10 @@ DeviceBuffer& DeviceBuffer::operator=(DeviceBuffer&& other) noexcept {
 
 Weight::Weight(const GGUF& model, const std::string& tensor_name)
     : name(tensor_name) {
-    const ggml_tensor* tensor = model.get_tensor(name);
-    if (!tensor) {
-        throw std::runtime_error("Tensor unavailable: " + name +
-            ". Load the GGUF with load_weights=true and check the tensor name.");
-    }
-    switch (tensor->type) {
-    case GGML_TYPE_Q6_K: datatype = DataType::Q6_K; break;
-    case GGML_TYPE_Q4_K: datatype = DataType::Q4_K; break;
-    case GGML_TYPE_F32: datatype = DataType::F32; break;
-    default:
-        throw std::invalid_argument("Unsupported weight type for " + name +
-            ": " + ggml_type_name(tensor->type));
-    }
-    dimension.assign(std::begin(tensor->ne), std::end(tensor->ne));
-    device_buffer = DeviceBuffer(tensor->data, ggml_nbytes(tensor));
+    const auto* tensor = model.get_tensor_info(name);
+    datatype = tensor->type;
+    dimension.assign(tensor->dimensions.begin(), tensor->dimensions.end());
+    const auto data = model.read_tensor_data(name);
+    device_buffer = DeviceBuffer(data.data(), data.size());
+    // cudaMemcpy is synchronous; the temporary CPU buffer can now be released.
 }
