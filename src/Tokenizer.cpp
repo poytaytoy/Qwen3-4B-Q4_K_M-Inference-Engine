@@ -203,6 +203,7 @@ std::string Tokenizer::decode(uint32_t id, bool skip_special) const {
     std::string out;
     
     const bool special = is_special_token(id); // Also validates the ID.
+    if (special && skip_special) return {};
     if (special || token_types[id] == 4) out += tokens[id];
     else out += decode_bytes(tokens[id]);
     
@@ -212,7 +213,6 @@ std::string Tokenizer::decode(uint32_t id, bool skip_special) const {
 std::string Tokenizer::decode(const std::vector<uint32_t>& ids, bool skip_special) const {
     std::string out;
 
-    #pragma omp parallel for schedule(static)
     for (auto id : ids) {
         out += Tokenizer::decode(id, skip_special); 
     }

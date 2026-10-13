@@ -1,4 +1,5 @@
 #include "Engine.hpp"
+#include <format>
 #include <stdexcept>
 
 Engine::Engine(const std::filesystem::path& file)
@@ -23,9 +24,12 @@ uint32_t Engine::simulate_inference() {
 uint32_t Engine::inference(){
     DeviceBuffer token_buffer{embedlookup.lookup(chat_session)};
     
-    
+    for (int i = 0; i < 36; i++){
+        const auto prefix = std::format("blk.{}.", i);
+        const auto& norm = weights.at(prefix + "attn_norm.weight");
+        const auto& q = weights.at(prefix + "attn_q.weight");
+    }
 }
-
 
 std::string Engine::run(const std::vector<ChatMessage>& messages,
     bool enable_thinking, size_t max_new_tokens) {
