@@ -43,16 +43,27 @@ private:
 void rms_norm(const float* input, const Weight& scale, float* output,
     size_t rows, size_t width, float epsilon);
 
-// weight dimensions are [input_width, output_width] in GGUF order.
-// Supports Q4_K and Q6_K; input_width must be a positive multiple of 256.
-// Clears output [rows, output_width] before atomically accumulating the product.
-// Clear and product are queued asynchronously on stream; no host synchronization.
-// Input, weights and output must not alias and must stay alive until completion.
-// Callers manage dependencies when producing/consuming buffers on other streams.
+// Weight dimensions are [input_width, output_width] in GGUF order.
+// Both implementations support Q4_K/Q6_K with input_width divisible by 256.
+// Calls are asynchronous on stream; buffers must remain alive until completion.
+// Input, weights and output must not alias. Callers manage cross-stream dependencies.
+inline namespace v1 {
+// Register-array implementation; remains the default kernels::matmul.
 void matmul(const float* input, const Weight& weight, float* output, size_t rows,
     cudaStream_t stream = nullptr);
 void matmul(const float* input, const Weight& weight, float* output, size_t rows,
     const CudaStream& stream);
+
+} // namespace v1
+
+namespace v2 {
+// Shared-memory tiled implementation. Overwrites output without atomic additions.
+// Stages packed weights and input, then decodes weights in shared memory for reuse.
+void matmul(const float* input, const Weight& weight, float* output, size_t rows,
+    cudaStream_t stream = nullptr);
+void matmul(const float* input, const Weight& weight, float* output, size_t rows,
+    const CudaStream& stream);
+} // namespace v2
 
 // In-place Qwen3 split-half RoPE, without extended-context scaling.
 void rope(float* input, size_t tokens, size_t heads, size_t head_dim,
