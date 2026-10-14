@@ -1,6 +1,13 @@
 cmake_minimum_required(VERSION 3.24)
 project(InferenceEngine LANGUAGES C CXX CUDA)
 
+set(MODEL_PATH "${PROJECT_SOURCE_DIR}/models/Qwen3-4B-Q4_K_M.gguf"
+    CACHE FILEPATH "Default GGUF model for the application, benchmark and tests")
+get_filename_component(MODEL_PATH "${MODEL_PATH}" ABSOLUTE BASE_DIR "${PROJECT_SOURCE_DIR}")
+
+option(BUILD_TESTING "builds the test cases")
+option(BUILD_BENCHMARK "builds the benchmark")
+
 find_package(CUDAToolkit REQUIRED)
 find_package(OpenMP REQUIRED COMPONENTS CXX)
 
@@ -48,8 +55,7 @@ file(GLOB SOURCES CONFIGURE_DEPENDS
 
 list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
 add_library(inference_core STATIC ${SOURCES})
-add_executable(inference_engine src/main.cpp)
-target_link_libraries(inference_engine PRIVATE inference_core)
+target_compile_definitions(inference_core PRIVATE INFERENCE_MODEL_PATH="${MODEL_PATH}")
 
 target_include_directories(inference_core PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
@@ -63,6 +69,13 @@ set_target_properties(inference_core PROPERTIES
 
 target_link_libraries(inference_core PUBLIC ggml-base PCRE2::8BIT ICU::uc CUDA::cudart minja OpenMP::OpenMP_CXX)
 
+add_executable(inference_engine src/main.cpp)
+target_link_libraries(inference_engine PRIVATE inference_core)
+
 if(BUILD_TESTING)
     add_subdirectory(tests)
+endif()
+
+if (BUILD_BENCHMARK)
+    add_subdirectory(benchmark)
 endif()

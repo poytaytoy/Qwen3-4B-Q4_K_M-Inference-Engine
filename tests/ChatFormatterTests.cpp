@@ -1,8 +1,7 @@
 #include "ChatFormatter.hpp"
+#include "TestModel.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <stdexcept>
-
-inline constexpr const char* test_model_path = R"model(@INFERENCE_TEST_MODEL@)model";
 
 TEST_CASE("ChatFormatter renders real messages and Qwen prompt options", "[chat]") {
     GGUF model(test_model_path);

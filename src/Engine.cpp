@@ -3,6 +3,14 @@
 #include <format>
 #include <stdexcept>
 
+const char* const Engine::model_path = INFERENCE_MODEL_PATH;
+
+/*static*/ Engine& Engine::start(){
+    static Engine engine; 
+
+    return engine; 
+};
+
 Engine::Engine(const std::filesystem::path& file)
     : gguf(file, false), tokenizer(gguf), chat_formatter(gguf), embedlookup(gguf) {
     for (const auto& tensor : gguf.get_tensors())
@@ -86,8 +94,14 @@ uint32_t Engine::inference() {
 }
 
 
+void Engine::append_token(uint32_t token) {
+    if (token >= embedlookup.get_vocabulary_size())
+        throw std::out_of_range("Token ID out of range");
+    chat_session.push_back(token);
+}
+
 std::string Engine::run(const std::vector<ChatMessage>& messages,
-    bool enable_thinking, size_t max_new_tokens) {
+    bool enable_thinking, size_t max_new_tokens, bool stream_output, bool stop_at_eos) {
     const auto prompt = chat_formatter.render(messages, enable_thinking);
     chat_session = tokenizer.encode(prompt, true);
 
@@ -96,9 +110,9 @@ std::string Engine::run(const std::vector<ChatMessage>& messages,
         const uint32_t next = inference();
         chat_session.push_back(next);
         
-        if (next == eos_token) break;
+        if (stop_at_eos && next == eos_token) break;
 
-        std::cout << tokenizer.decode(next) << std::flush; 
+        if (stream_output) std::cout << tokenizer.decode(next) << std::flush;
 
         generated.push_back(next);
     }

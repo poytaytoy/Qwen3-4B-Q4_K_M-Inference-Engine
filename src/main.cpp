@@ -4,7 +4,7 @@
 
 int main(int argc, char* argv[]) {
     try {
-        Engine engine(argc > 1 ? argv[1] : "models/Qwen3-4B-Q4_K_M.gguf");
+        Engine& engine = Engine::start();
         std::cout << "Mock inference enabled.\n";
         std::string input;
         while (std::cout << "User: " && std::getline(std::cin, input)) {
