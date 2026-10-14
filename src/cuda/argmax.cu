@@ -1,13 +1,11 @@
 #include "Kernels.hpp"
 #include <algorithm>
-#include <limits>
 #include <math_constants.h>
 
 namespace {
 using kernels::detail::threads;
 
-// Ordered float bits occupy the high half; inverted ID breaks ties toward
-// the lowest token ID. One atomic updates both the score and its token.
+// Pack score and ID together so atomicMax selects a consistent winner.
 __device__ unsigned long long candidate(float value, uint32_t index) {
     if (isnan(value)) value = -CUDART_INF_F;
     if (value == 0.0f) value = 0.0f; // Give +0 and -0 identical ordering.
@@ -45,24 +43,19 @@ void check_cuda(cudaError_t error) {
 namespace kernels {
 
 uint32_t argmax(const float* logits, size_t vocabulary_size) {
-    if (!logits || vocabulary_size == 0 || vocabulary_size > std::numeric_limits<uint32_t>::max())
-        throw std::invalid_argument("Argmax requires logits and a nonempty uint32-sized vocabulary");
+    if (!logits || vocabulary_size == 0 || vocabulary_size > UINT32_MAX)
+        throw std::invalid_argument("Invalid argmax input");
 
-    unsigned long long* device_result = nullptr;
-    check_cuda(cudaMalloc(&device_result, sizeof(unsigned long long)));
+    DeviceBuffer storage(sizeof(unsigned long long));
+    auto* device_result = static_cast<unsigned long long*>(storage.data);
+    check_cuda(cudaMemset(device_result, 0, sizeof(unsigned long long)));
+
+    const unsigned blocks = std::min(size_t{256}, (vocabulary_size + threads - 1) / threads);
+    argmax_kernel<<<blocks, threads>>>(logits, device_result, vocabulary_size);
+    detail::check_launch();
+
     unsigned long long result;
-    try {
-        check_cuda(cudaMemset(device_result, 0, sizeof(result)));
-        const unsigned blocks = static_cast<unsigned>(
-            std::min((vocabulary_size + threads - 1) / threads, size_t{256}));
-        argmax_kernel<<<blocks, threads>>>(logits, device_result, vocabulary_size);
-        detail::check_launch();
-        check_cuda(cudaMemcpy(&result, device_result, sizeof(result), cudaMemcpyDeviceToHost));
-    } catch (...) {
-        cudaFree(device_result);
-        throw;
-    }
-    check_cuda(cudaFree(device_result));
+    check_cuda(cudaMemcpy(&result, device_result, sizeof(result), cudaMemcpyDeviceToHost));
     return ~static_cast<uint32_t>(result);
 }
 

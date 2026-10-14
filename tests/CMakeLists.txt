@@ -4,6 +4,7 @@ add_executable(inference_tests
     TokenizerTests.cpp
     ChatFormatterTests.cpp
     EmbedLookupTests.cpp
+    MatmulTests.cpp
 )
 target_link_libraries(inference_tests PRIVATE inference_core Catch2::Catch2WithMain)
 

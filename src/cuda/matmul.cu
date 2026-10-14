@@ -1,75 +1,146 @@
 #include "Kernels.hpp"
+#include "ggml.h"
+#include <limits>
+#include <cstddef>
+#include <cstdint>
 #include <cuda_fp16.h>
 
 namespace {
-using kernels::detail::threads;
 
-// Decode one component from a GGUF weight row.
-__device__ float weight_value(const uint8_t* row, ggml_type type, size_t column) {
-    if (type == GGML_TYPE_F32) return reinterpret_cast<const float*>(row)[column];
+struct Q4KScaleOffset {
+    int scale;
+    int offset;
+};
 
-    const size_t j = column % 256;
-    if (type == GGML_TYPE_Q4_K) {
-        const uint8_t* block = row + (column / 256) * 144;
-        const float d = __half2float(reinterpret_cast<const __half*>(block)[0]);
-        const float dmin = __half2float(reinterpret_cast<const __half*>(block)[1]);
-        const uint8_t* scales = block + 4;
-        const unsigned group = j / 32;
-        const unsigned scale = group < 4 ? scales[group] & 63
-            : (scales[group + 4] & 15) | ((scales[group - 4] >> 6) << 4);
-        const unsigned min = group < 4 ? scales[group + 4] & 63
-            : (scales[group + 4] >> 4) | ((scales[group] >> 6) << 4);
-        const unsigned packed = block[16 + (group / 2) * 32 + j % 32];
-        const unsigned quant = (packed >> ((group % 2) * 4)) & 15;
-        return d * scale * quant - dmin * min;
+// scales points to the 12-byte field at block + 4; group is in [0, 7].
+__device__ __forceinline__ Q4KScaleOffset q4k_scale_offset(const uint8_t* scales, int group) {
+    if (group < 4)
+        return {scales[group] & 63, scales[group + 4] & 63};
+
+    const int g = group - 4;
+    return {
+        ((scales[g] >> 6) << 4) | (scales[8 + g] & 15),
+        ((scales[4 + g] >> 6) << 4) | (scales[8 + g] >> 4)
+    };
+}
+
+__global__ void matmul_kernel_q4k(const float* __restrict input, const std::byte* __restrict weight,
+    float* __restrict output, size_t rows, size_t input_width, size_t output_width) {
+    const std::size_t warp_id = (size_t(blockDim.x) * blockIdx.x + threadIdx.x) / 32;
+    const size_t groups = output_width * (input_width / 32);
+    if (warp_id >= groups) return;
+    const std::size_t index_loc = warp_id * 32;
+    const int true_thread_id = threadIdx.x % 32;
+    const std::size_t block_index = index_loc / 256;
+    weight += block_index * 144;
+    const int block_group =  index_loc % 256 / 32;
+    const float d = __half2float(*reinterpret_cast<const __half*>(weight));
+    const float dmin = __half2float(*reinterpret_cast<const __half*>(weight + 2));
+    const auto scale_offset = q4k_scale_offset(
+        reinterpret_cast<const uint8_t*>(weight + 4), block_group);
+    const int scale = scale_offset.scale;
+    const int offset = scale_offset.offset;
+
+    uint8_t q = static_cast<uint8_t>((weight + 16)[(block_group / 2) * 32 + true_thread_id]);
+
+    q = (block_group % 2 == 0) ? q & 15 : q >> 4;  
+
+    float unquantized = d * scale * q - dmin * offset;
+    const std::size_t input_index = (index_loc + true_thread_id) % input_width;
+
+    for (size_t i = 0; i < rows; i++){
+        float true_weight = input[input_index] * unquantized;
+        for (int offset = 16; offset > 0; offset /= 2)
+            true_weight += __shfl_down_sync(0xffffffff, true_weight, offset);
+        if (true_thread_id == 0){
+            atomicAdd(&output[index_loc / input_width], true_weight);
+        }
+        input += input_width;
+        output += output_width;
     }
 
-    const uint8_t* block = row + (column / 256) * 210;
-    const unsigned half = j / 128;
-    const unsigned group = (j % 128) / 32;
-    const unsigned position = j % 32;
-    const unsigned low = (block[half * 64 + (group % 2) * 32 + position] >> (4 * (group / 2))) & 15;
-    const unsigned high = (block[128 + half * 32 + position] >> (2 * group)) & 3;
-    const int quant = static_cast<int>((high << 4) | low) - 32;
-    const int scale = reinterpret_cast<const int8_t*>(block + 192)[j / 16];
-    const float d = __half2float(*reinterpret_cast<const __half*>(block + 208));
-    return d * scale * quant;
 }
 
-// TODO: Optimize later with tiled matrix multiplication, shared-memory reuse,
-// and dedicated quantized kernels. Baseline: one thread per output element.
-__global__ void matmul_kernel(const float* input, const void* weight, ggml_type type,
-    float* output, size_t rows, size_t input_width, size_t output_width, size_t row_bytes) {
-    const size_t index = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (index >= rows * output_width) return;
-    const size_t row = index / output_width;
-    const size_t column = index % output_width;
-    const uint8_t* weight_row = static_cast<const uint8_t*>(weight) + column * row_bytes;
-    float sum = 0.0f;
-    for (size_t i = 0; i < input_width; ++i)
-        sum += input[row * input_width + i] * weight_value(weight_row, type, i);
-    output[index] = sum;
+__global__ void matmul_kernel_q6k(const float* __restrict input, const std::byte* __restrict weight,
+    
+    float* __restrict output, size_t rows, size_t input_width, size_t output_width) {
+    const size_t warp_id = (size_t(blockDim.x) * blockIdx.x + threadIdx.x) / 32;
+    if (warp_id >= output_width * (input_width / 32)) return;
+
+    const size_t index_loc = warp_id * 32;
+    const int lane = threadIdx.x % 32;
+    weight += (index_loc / 256) * 210;
+    const int group = (index_loc % 128) / 32;
+    const int half = (index_loc % 256) / 128;
+    const auto* ql = reinterpret_cast<const uint8_t*>(weight);
+    const auto* qh = reinterpret_cast<const uint8_t*>(weight + 128);
+    const auto* scales = reinterpret_cast<const int8_t*>(weight + 192);
+    const float d = __half2float(*reinterpret_cast<const __half*>(weight + 208));
+    const int low = (ql[half * 64 + (group % 2) * 32 + lane] >> (4 * (group / 2))) & 15;
+    const int high = (qh[half * 32 + lane] >> (2 * group)) & 3;
+    const int q = (low | (high << 4)) - 32;
+    const float unquantized = d * scales[half * 8 + group * 2 + lane / 16] * q;
+    const size_t input_index = (index_loc + lane) % input_width;
+
+    for (size_t row = 0; row < rows; ++row) {
+        float sum = input[input_index] * unquantized;
+        for (int offset = 16; offset > 0; offset /= 2)
+            sum += __shfl_down_sync(0xffffffff, sum, offset);
+        if (lane == 0) atomicAdd(&output[index_loc / input_width], sum);
+        input += input_width;
+        output += output_width;
+    }
 }
 
-}
+} // namespace
 
 namespace kernels {
 
-void matmul(const float* input, const Weight& weight, float* output, size_t rows) {
+void matmul(const float* input, const Weight& weight, float* output, size_t rows, cudaStream_t stream) {
+    if (weight.datatype != GGML_TYPE_Q4_K && weight.datatype != GGML_TYPE_Q6_K)
+        throw std::invalid_argument("matmul supports Q4_K and Q6_K weights only");
+    
+    if (weight.dimension.size() < 2 || weight.dimension[0] <= 0 ||
+        weight.dimension[0] % 256 != 0 || weight.dimension[1] <= 0)
+        throw std::invalid_argument("Invalid matmul weight dimensions");
+    
     if (rows == 0) return;
-    if (weight.dimension.size() < 2 || weight.dimension[0] <= 0 || weight.dimension[1] <= 0 ||
-        (weight.datatype != GGML_TYPE_F32 && weight.datatype != GGML_TYPE_Q4_K && weight.datatype != GGML_TYPE_Q6_K))
-        throw std::invalid_argument("Matmul requires an F32, Q4_K or Q6_K weight matrix");
 
     const size_t input_width = weight.dimension[0];
     const size_t output_width = weight.dimension[1];
-    if (weight.datatype != GGML_TYPE_F32 && input_width % 256 != 0)
-        throw std::invalid_argument("Quantized matmul requires input width divisible by 256");
-    const size_t row_bytes = weight.datatype == GGML_TYPE_F32 ? input_width * sizeof(float)
-        : (input_width / 256) * (weight.datatype == GGML_TYPE_Q4_K ? 144 : 210);
-    matmul_kernel<<<(rows * output_width + threads - 1) / threads, threads>>>(
-        input, weight.device_buffer.data, weight.datatype, output, rows, input_width, output_width, row_bytes);
+    
+    if (rows > std::numeric_limits<size_t>::max() / output_width ||
+        output_width > std::numeric_limits<size_t>::max() / (input_width / 32))
+        throw std::length_error("matmul dimensions overflow");
+    
+    const size_t groups = output_width * (input_width / 32);
+    const size_t blocks = (groups - 1) / (detail::threads / 32) + 1;
+    
+    if (blocks > static_cast<size_t>(std::numeric_limits<int>::max()))
+        throw std::length_error("matmul launch exceeds grid size limit");
+    
+    const size_t count = rows * output_width;
+    
+    if (count > std::numeric_limits<size_t>::max() / sizeof(float))
+        throw std::length_error("matmul output byte size overflow");
+    
+    const auto error = cudaMemsetAsync(output, 0, count * sizeof(float), stream);
+    
+    if (error != cudaSuccess)
+        throw std::runtime_error(std::string("matmul output clear failed: ") + cudaGetErrorString(error));
+
+    const auto* data = reinterpret_cast<const std::byte*>(weight.device_buffer.data);
+    if (weight.datatype == GGML_TYPE_Q4_K)
+        matmul_kernel_q4k<<<blocks, detail::threads, 0, stream>>>(input, data, output, rows, input_width, output_width);
+    else
+        matmul_kernel_q6k<<<blocks, detail::threads, 0, stream>>>(input, data, output, rows, input_width, output_width);
+    
     detail::check_launch();
 }
 
+void matmul(const float* input, const Weight& weight, float* output, size_t rows,
+    const CudaStream& stream) {
+    matmul(input, weight, output, rows, stream.get());
 }
+
+} // namespace kernels

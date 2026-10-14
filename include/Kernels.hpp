@@ -7,7 +7,7 @@
 #include <string>
 
 // Host-callable CUDA entry points. Float activations are row-major device buffers.
-// Launches use the default CUDA stream.
+// Launches use the default CUDA stream unless a stream parameter is provided.
 namespace kernels::detail {
 
 inline constexpr unsigned threads = 256;
@@ -22,12 +22,37 @@ inline void check_launch() {
 
 namespace kernels {
 
+// Owns a nonblocking stream. Destruction releases it without waiting for work.
+// Buffers used by queued work must remain alive until that work completes.
+class CudaStream {
+public:
+    CudaStream();
+    ~CudaStream();
+    CudaStream(const CudaStream&) = delete;
+    CudaStream& operator=(const CudaStream&) = delete;
+    CudaStream(CudaStream&& other) noexcept;
+    CudaStream& operator=(CudaStream&& other) noexcept;
+
+    cudaStream_t get() const;
+    void synchronize() const;
+    bool ready() const;
+private:
+    cudaStream_t stream_{nullptr};
+};
+
 void rms_norm(const float* input, const Weight& scale, float* output,
     size_t rows, size_t width, float epsilon);
 
 // weight dimensions are [input_width, output_width] in GGUF order.
-// Supports F32, Q4_K and Q6_K, including the tied embedding output matrix.
-void matmul(const float* input, const Weight& weight, float* output, size_t rows);
+// Supports Q4_K and Q6_K; input_width must be a positive multiple of 256.
+// Clears output [rows, output_width] before atomically accumulating the product.
+// Clear and product are queued asynchronously on stream; no host synchronization.
+// Input, weights and output must not alias and must stay alive until completion.
+// Callers manage dependencies when producing/consuming buffers on other streams.
+void matmul(const float* input, const Weight& weight, float* output, size_t rows,
+    cudaStream_t stream = nullptr);
+void matmul(const float* input, const Weight& weight, float* output, size_t rows,
+    const CudaStream& stream);
 
 // In-place Qwen3 split-half RoPE, without extended-context scaling.
 void rope(float* input, size_t tokens, size_t heads, size_t head_dim,
