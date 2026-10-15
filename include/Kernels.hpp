@@ -3,6 +3,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cuda_runtime.h>
+#ifdef __CUDACC__
+#include <cuda_fp16.h>
+#endif
 #include <stdexcept>
 #include <string>
 
@@ -11,6 +14,55 @@
 namespace kernels::detail {
 
 inline constexpr unsigned threads = 256;
+
+// Internal launchers; public matmul validates inputs before dispatching.
+void matmul_small(const float* input, const Weight& weight, float* output,
+    size_t rows, cudaStream_t stream);
+void matmul_tiled(const float* input, const Weight& weight, float* output,
+    size_t rows, cudaStream_t stream);
+
+#ifdef __CUDACC__
+// Decode one weight; flattened index addresses the packed weight matrix.
+__device__ __forceinline__ float dequantize_q4k(const std::byte* weight, size_t index) {
+    const int lane = index % 32;
+    const size_t block_index = index / 256;
+    weight += block_index * 144;
+    const int block_group =  index % 256 / 32;
+    const float d = __half2float(*reinterpret_cast<const __half*>(weight));
+    const float dmin = __half2float(*reinterpret_cast<const __half*>(weight + 2));
+    const auto* scales = reinterpret_cast<const uint8_t*>(weight + 4);
+    int scale, offset;
+    if (block_group < 4) {
+        scale = scales[block_group] & 63;
+        offset = scales[block_group + 4] & 63;
+    } else {
+        const int g = block_group - 4;
+        scale = ((scales[g] >> 6) << 4) | (scales[8 + g] & 15);
+        offset = ((scales[4 + g] >> 6) << 4) | (scales[8 + g] >> 4);
+    }
+
+    uint8_t q = static_cast<uint8_t>((weight + 16)[(block_group / 2) * 32 + lane]);
+
+    q = (block_group % 2 == 0) ? q & 15 : q >> 4;
+
+    return d * scale * q - dmin * offset;
+}
+
+__device__ __forceinline__ float dequantize_q6k(const std::byte* weight, size_t index) {
+    const int lane = index % 32;
+    weight += (index / 256) * 210;
+    const int group = (index % 128) / 32;
+    const int half = (index % 256) / 128;
+    const auto* ql = reinterpret_cast<const uint8_t*>(weight);
+    const auto* qh = reinterpret_cast<const uint8_t*>(weight + 128);
+    const auto* scales = reinterpret_cast<const int8_t*>(weight + 192);
+    const float d = __half2float(*reinterpret_cast<const __half*>(weight + 208));
+    const int low = (ql[half * 64 + (group % 2) * 32 + lane] >> (4 * (group / 2))) & 15;
+    const int high = (qh[half * 32 + lane] >> (2 * group)) & 3;
+    const int q = (low | (high << 4)) - 32;
+    return d * scales[half * 8 + group * 2 + lane / 16] * q;
+}
+#endif
 
 inline void check_launch() {
     const auto error = cudaGetLastError();
@@ -22,8 +74,6 @@ inline void check_launch() {
 
 namespace kernels {
 
-// Owns a nonblocking stream. Destruction releases it without waiting for work.
-// Buffers used by queued work must remain alive until that work completes.
 class CudaStream {
 public:
     CudaStream();
@@ -43,35 +93,28 @@ private:
 void rms_norm(const float* input, const Weight& scale, float* output,
     size_t rows, size_t width, float epsilon);
 
-// Weight dimensions are [input_width, output_width] in GGUF order.
-// Both implementations support Q4_K/Q6_K with input_width divisible by 256.
-// Calls are asynchronous on stream; buffers must remain alive until completion.
-// Input, weights and output must not alias. Callers manage cross-stream dependencies.
-inline namespace v1 {
-// Register-array implementation; remains the default kernels::matmul.
+// Explicit implementations for comparison: v1 retains FP32 inputs; v2 quantizes
+// activations to signed bytes and computes packed integer dot products.
+namespace v1 {
 void matmul(const float* input, const Weight& weight, float* output, size_t rows,
     cudaStream_t stream = nullptr);
-void matmul(const float* input, const Weight& weight, float* output, size_t rows,
-    const CudaStream& stream);
-
-} // namespace v1
-
+}
 namespace v2 {
-// Shared-memory tiled implementation. Overwrites output without atomic additions.
-// Stages packed weights and input, then decodes weights in shared memory for reuse.
 void matmul(const float* input, const Weight& weight, float* output, size_t rows,
     cudaStream_t stream = nullptr);
+}
+
+// Kernel1 for fewer than 5 input rows; tiled kernel2 for 5 or more.
+// Overwrites output asynchronously on stream; buffers must remain alive until completion.
+void matmul(const float* input, const Weight& weight, float* output, size_t rows,
+    cudaStream_t stream = nullptr);
+
 void matmul(const float* input, const Weight& weight, float* output, size_t rows,
     const CudaStream& stream);
-} // namespace v2
 
-// In-place Qwen3 split-half RoPE, without extended-context scaling.
 void rope(float* input, size_t tokens, size_t heads, size_t head_dim,
     size_t position_offset, float frequency_base);
 
-// Causal grouped-query attention, with Q/K/V in [tokens, heads, head_dim] order.
-// Tiled online softmax; head_dim must be in [1, 256]. Output must not alias Q/K/V.
-// Q/output have tokens rows; K/V have query_offset + tokens rows.
 void attention(const float* q, const float* k, const float* v, float* output,
     size_t tokens, size_t query_heads, size_t kv_heads, size_t head_dim,
     size_t query_offset = 0);
@@ -80,8 +123,6 @@ void residual_add(float* state, const float* branch, size_t count);
 
 void silu_multiply(const float* gate, const float* up, float* output, size_t count);
 
-// Greedy next-token selection; returns the selected ID to the host.
-// Ties choose the lowest ID. NaNs are treated as negative infinity.
 uint32_t argmax(const float* logits, size_t vocabulary_size);
 
 }

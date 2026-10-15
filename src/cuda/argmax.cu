@@ -14,7 +14,6 @@ __device__ unsigned long long candidate(float value, uint32_t index) {
     return (static_cast<unsigned long long>(ordered) << 32) | ~index;
 }
 
-// TODO: Tune launch sizing and reuse result storage to avoid per-token allocation.
 __global__ void argmax_kernel(const float* logits, unsigned long long* result, size_t count) {
     __shared__ unsigned long long block_best;
     if (threadIdx.x == 0) block_best = 0;

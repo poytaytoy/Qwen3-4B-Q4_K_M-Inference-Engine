@@ -61,18 +61,30 @@ Measure inference speed in generated tokens per second:
 
 ```sh
 # Arguments: tokens per run, number of runs, optional prompt
-./build/release/benchmark/benchmark 8 3
-./build/release/benchmark/benchmark 8 3 "Explain what a GPU does."
+./build/release/benchmark/benchmark 32 3
+./build/release/benchmark/benchmark 32 3 "Explain what a GPU does."
 ```
 
 The inference benchmark warms up first, reports model loading separately, and
-measures each generated token. KV caching is not implemented yet.
+reports throughput for multiple output tokens per run (defaults: 32 tokens, 3 runs).
+It reports aggregate tokens/s including prefill, first-token latency, and cached
+decode tokens/s excluding the first token. It generates the requested count even
+if EOS occurs; model loading and prompt tokenization are excluded from throughput.
 
-Benchmark kernel1 on real Q4_K/Q6_K projections:
+Compare v1 (FP32 inputs) and experimental v2 (Q8 inputs + packed integer dots):
 
 ```sh
 ./build/release/benchmark/matmul_benchmark
 ```
+
+The application defaults to v1. To benchmark generation with v2:
+
+```sh
+INFERENCE_MATMUL=v2 ./build/release/benchmark/benchmark 32 3
+```
+
+v2 includes input quantization overhead and changes activation precision.
+
 
 This reports milliseconds per projection pair for 1, 32, and 100 input tokens,
 using one stream or separate streams. These are kernel benchmark timings, not

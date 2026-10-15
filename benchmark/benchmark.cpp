@@ -32,8 +32,8 @@ size_t positive_count(std::string_view argument) {
 
 int main(int argc, char* argv[]) {
     try {
-        if (argc > 4) throw std::invalid_argument("Usage: benchmark [tokens=8] [runs=3] [prompt]");
-        const size_t tokens = argc > 1 ? positive_count(argv[1]) : 8;
+        if (argc > 4) throw std::invalid_argument("Usage: benchmark [tokens=32] [runs=3] [prompt]");
+        const size_t tokens = argc > 1 ? positive_count(argv[1]) : 32;
         const size_t runs = argc > 2 ? positive_count(argv[2]) : 3;
         const std::vector<ChatMessage> messages{{"user", argc > 3 ? argv[3] : "Explain what a GPU does in a few sentences."}};
 
@@ -44,32 +44,53 @@ int main(int argc, char* argv[]) {
         const double startup = elapsed_time([] { Engine::start(); synchronize_gpu(); });
         Engine& engine = Engine::start();
         std::cout << "Model load: " << startup << " s" << std::endl;
-        engine.run(session, false, 1, false, false);
+        engine.run(session, false, 2, false, false);
         synchronize_gpu();
 
-        double total_seconds = 0.0;
+        double total_seconds = 0.0, total_decode_seconds = 0.0;
         for (size_t i = 0; i < runs; ++i) {
-            // Prepare the prompt without generating tokens; reset for each run.
+            // Reset the prompt/cache per run; exclude tokenization from timing.
             engine.run(session, false, 0, false, false);
+            const size_t input_tokens = session.tokens.size();
+            if (input_tokens > session.cache_capacity || tokens > session.cache_capacity - input_tokens)
+                throw std::invalid_argument("Prompt plus output tokens exceeds session capacity");
+            synchronize_gpu();
 
-            for (size_t token = 0; token < tokens; ++token) {
-                const size_t input_tokens = session.tokens.size();
-                uint32_t next;
+            // The first prediction includes prompt prefill; later ones use the KV cache.
+            const double first_seconds = elapsed_time([&] {
+                engine.append_token(session, engine.inference(session));
                 synchronize_gpu();
-                const double seconds = elapsed_time([&] {
-                    next = engine.inference(session);
+            });
+            double decode_seconds = 0.0;
+            if (tokens > 1) {
+                decode_seconds = elapsed_time([&] {
+                    for (size_t token = 1; token < tokens; ++token)
+                        engine.append_token(session, engine.inference(session));
                     synchronize_gpu();
                 });
-                total_seconds += seconds;
-                engine.append_token(session, next);
-
-                std::cout << "Run " << i + 1 << ", token " << token + 1
-                          << " (" << input_tokens << " input tokens): "
-                          << seconds << " s | " << 1.0 / seconds << " tokens/s" << std::endl;
             }
+            const double seconds = first_seconds + decode_seconds;
+            total_seconds += seconds;
+            total_decode_seconds += decode_seconds;
+
+            // Generate the requested count even if EOS occurs; no printing is timed.
+            std::cout << "Run " << i + 1 << ": " << input_tokens << " prompt tokens, "
+                      << tokens << " output tokens | " << seconds << " s | "
+                      << tokens / seconds << " tokens/s | first token "
+                      << first_seconds * 1000.0 << " ms";
+            if (tokens > 1)
+                std::cout << " | cached decode " << (tokens - 1) / decode_seconds << " tokens/s";
+            std::cout << std::endl;
         }
-        std::cout << "Speed: " << static_cast<double>(tokens) * static_cast<double>(runs) / total_seconds
-                  << " tokens/s\n";
+        const double output_count = static_cast<double>(tokens) * static_cast<double>(runs);
+        std::cout << "Average: " << output_count / total_seconds << " tokens/s | "
+                  << total_seconds * 1000.0 / output_count << " ms/token across "
+                  << runs << " runs (includes prefill)\n";
+        if (tokens > 1)
+            std::cout << "Average cached decode: "
+                      << static_cast<double>(tokens - 1) * static_cast<double>(runs) / total_decode_seconds
+                      << " tokens/s (excludes first token)\n";
+
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;
