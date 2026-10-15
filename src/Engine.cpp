@@ -72,7 +72,9 @@ uint32_t Engine::inference() {
         rms_norm(fp(k), weight("attn_k_norm.weight"), fp(k_normalized), tokens * kv_heads, head_dim, epsilon);
         rope(fp(q_normalized), tokens, heads, head_dim, 0, rope_base);
         rope(fp(k_normalized), tokens, kv_heads, head_dim, 0, rope_base);
+
         attention(fp(q_normalized), fp(k_normalized), fp(v), fp(attended), tokens, heads, kv_heads, head_dim);
+        
         matmul(fp(attended), weight("attn_output.weight"), fp(branch), tokens);
         residual_add(fp(token_buffer), fp(branch), tokens * width);
 

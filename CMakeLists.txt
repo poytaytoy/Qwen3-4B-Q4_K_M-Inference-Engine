@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 project(InferenceEngine LANGUAGES C CXX CUDA)
 
-set(MODEL_PATH "${PROJECT_SOURCE_DIR}/models/Qwen3-4B-Q4_K_M.gguf"
+set(MODEL_PATH "${PROJECT_SOURCE_DIR}/assets/models/Qwen3-4B-Q4_K_M.gguf"
     CACHE FILEPATH "Default GGUF model for the application, benchmark and tests")
 get_filename_component(MODEL_PATH "${MODEL_PATH}" ABSOLUTE BASE_DIR "${PROJECT_SOURCE_DIR}")
 
@@ -75,7 +75,7 @@ add_executable(inference_engine src/main.cpp)
 target_link_libraries(inference_engine PRIVATE inference_core)
 
 if(BUILD_TESTING)
-    add_subdirectory(tests)
+    add_subdirectory(src/tests)
 endif()
 
 if (BUILD_BENCHMARK)
