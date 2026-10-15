@@ -30,6 +30,7 @@ DeviceBuffer::DeviceBuffer(std::size_t source_bytes){
     if (error != cudaSuccess) {
         throw std::runtime_error(std::string("cudaMalloc failed: ") + cudaGetErrorString(error));
     }
+    bytes = source_bytes;
 }
 
 DeviceBuffer::~DeviceBuffer() {

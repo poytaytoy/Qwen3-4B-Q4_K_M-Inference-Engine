@@ -30,12 +30,17 @@ uint32_t Engine::simulate_inference() {
     return token >= eos_token ? token + 1 : token;
 }
 
-uint32_t Engine::inference() {
+uint32_t Engine::inference(ChatSession& session) {
     using namespace kernels;
 
-    if (chat_session.empty()) throw std::invalid_argument("Inference requires tokens");
+    if (session.tokens.empty()) throw std::invalid_argument("Inference requires tokens");
 
-    const size_t tokens = chat_session.size();
+    const size_t offset = session.cached_tokens;
+    if (session.tokens.size() > session.cache_capacity)
+        throw std::length_error("Chat session cache capacity exceeded");
+    if (offset >= session.tokens.size())
+        throw std::invalid_argument("Inference requires uncached tokens");
+    const size_t tokens = session.tokens.size() - offset;
     const size_t width = embedlookup.get_embedding_size();
     const size_t heads = gguf.get_attention_head_count().value();
     const size_t kv_heads = gguf.get_value<uint32_t>("qwen3.attention.head_count_kv").value();
@@ -44,13 +49,12 @@ uint32_t Engine::inference() {
     const float epsilon = gguf.get_value<float>("qwen3.attention.layer_norm_rms_epsilon").value();
     const float rope_base = gguf.get_value<float>("qwen3.rope.freq_base").value();
 
-    DeviceBuffer token_buffer{embedlookup.lookup(chat_session)};
+    const std::vector<uint32_t> pending(session.tokens.begin() + offset, session.tokens.end());
+    DeviceBuffer token_buffer{embedlookup.lookup(pending)};
     DeviceBuffer normalized(tokens * width * sizeof(float));
     DeviceBuffer q(tokens * heads * head_dim * sizeof(float));
     DeviceBuffer k(tokens * kv_heads * head_dim * sizeof(float));
-    DeviceBuffer v(tokens * kv_heads * head_dim * sizeof(float));
     DeviceBuffer q_normalized(tokens * heads * head_dim * sizeof(float));
-    DeviceBuffer k_normalized(tokens * kv_heads * head_dim * sizeof(float));
     DeviceBuffer attended(tokens * heads * head_dim * sizeof(float));
     DeviceBuffer branch(tokens * width * sizeof(float));
     DeviceBuffer gate(tokens * ffn_width * sizeof(float));
@@ -63,17 +67,24 @@ uint32_t Engine::inference() {
         const auto prefix = std::format("blk.{}.", i);
         auto weight = [&](const char* name) -> const Weight& { return weights.at(prefix + name); };
 
+        const auto key_name = prefix + "key";
+        const auto value_name = prefix + "value";
+        float* cached_k = session.update_cache(key_name, kv_heads * head_dim);
+        float* cached_v = session.update_cache(value_name, kv_heads * head_dim);
+        float* new_k = session.cache_write_ptr(key_name, tokens);
+        float* new_v = session.cache_write_ptr(value_name, tokens);
+
         rms_norm(fp(token_buffer), weight("attn_norm.weight"), fp(normalized), tokens, width, epsilon);
         matmul(fp(normalized), weight("attn_q.weight"), fp(q), tokens);
         matmul(fp(normalized), weight("attn_k.weight"), fp(k), tokens);
-        matmul(fp(normalized), weight("attn_v.weight"), fp(v), tokens);
+        matmul(fp(normalized), weight("attn_v.weight"), new_v, tokens);
 
         rms_norm(fp(q), weight("attn_q_norm.weight"), fp(q_normalized), tokens * heads, head_dim, epsilon);
-        rms_norm(fp(k), weight("attn_k_norm.weight"), fp(k_normalized), tokens * kv_heads, head_dim, epsilon);
-        rope(fp(q_normalized), tokens, heads, head_dim, 0, rope_base);
-        rope(fp(k_normalized), tokens, kv_heads, head_dim, 0, rope_base);
+        rms_norm(fp(k), weight("attn_k_norm.weight"), new_k, tokens * kv_heads, head_dim, epsilon);
+        rope(fp(q_normalized), tokens, heads, head_dim, offset, rope_base);
+        rope(new_k, tokens, kv_heads, head_dim, offset, rope_base);
 
-        attention(fp(q_normalized), fp(k_normalized), fp(v), fp(attended), tokens, heads, kv_heads, head_dim);
+        attention(fp(q_normalized), cached_k, cached_v, fp(attended), tokens, heads, kv_heads, head_dim, offset);
         
         matmul(fp(attended), weight("attn_output.weight"), fp(branch), tokens);
         residual_add(fp(token_buffer), fp(branch), tokens * width);
@@ -92,25 +103,32 @@ uint32_t Engine::inference() {
     DeviceBuffer logits(embedlookup.get_vocabulary_size() * sizeof(float));
     matmul(fp(normalized), weights.at("token_embd.weight"), fp(logits), 1);
     
-    return argmax(fp(logits), embedlookup.get_vocabulary_size());
+    const auto next = argmax(fp(logits), embedlookup.get_vocabulary_size());
+    session.cached_tokens += tokens;
+    return next;
 }
 
 
-void Engine::append_token(uint32_t token) {
+void Engine::append_token(ChatSession& session, uint32_t token) {
     if (token >= embedlookup.get_vocabulary_size())
         throw std::out_of_range("Token ID out of range");
-    chat_session.push_back(token);
+    session.tokens.push_back(token);
 }
 
-std::string Engine::run(const std::vector<ChatMessage>& messages,
+std::string Engine::run(ChatSession& session,
     bool enable_thinking, size_t max_new_tokens, bool stream_output, bool stop_at_eos) {
-    const auto prompt = chat_formatter.render(messages, enable_thinking);
-    chat_session = tokenizer.encode(prompt, true);
+    const auto prompt = chat_formatter.render(session.messages, enable_thinking);
+    auto prompt_tokens = tokenizer.encode(prompt, true);
+    if (prompt_tokens.size() > session.cache_capacity ||
+        max_new_tokens > session.cache_capacity - prompt_tokens.size())
+        throw std::length_error("Prompt and generation exceed chat session cache capacity");
+    session.tokens = std::move(prompt_tokens);
+    session.cached_tokens = 0;
 
     std::vector<uint32_t> generated;
     for (size_t step = 0; step < max_new_tokens; ++step) {
-        const uint32_t next = inference();
-        chat_session.push_back(next);
+        const uint32_t next = inference(session);
+        session.tokens.push_back(next);
         
         if (stop_at_eos && next == eos_token) break;
 

@@ -71,9 +71,10 @@ void rope(float* input, size_t tokens, size_t heads, size_t head_dim,
 
 // Causal grouped-query attention, with Q/K/V in [tokens, heads, head_dim] order.
 // Tiled online softmax; head_dim must be in [1, 256]. Output must not alias Q/K/V.
-// Full-sequence prefill for now; KV caching can be added later.
+// Q/output have tokens rows; K/V have query_offset + tokens rows.
 void attention(const float* q, const float* k, const float* v, float* output,
-    size_t tokens, size_t query_heads, size_t kv_heads, size_t head_dim);
+    size_t tokens, size_t query_heads, size_t kv_heads, size_t head_dim,
+    size_t query_offset = 0);
 
 void residual_add(float* state, const float* branch, size_t count);
 

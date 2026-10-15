@@ -37,28 +37,31 @@ int main(int argc, char* argv[]) {
         const size_t runs = argc > 2 ? positive_count(argv[2]) : 3;
         const std::vector<ChatMessage> messages{{"user", argc > 3 ? argv[3] : "Explain what a GPU does in a few sentences."}};
 
+        ChatSession session;
+        session.messages = messages;
+
         std::cout << std::fixed << std::setprecision(3);
         const double startup = elapsed_time([] { Engine::start(); synchronize_gpu(); });
         Engine& engine = Engine::start();
         std::cout << "Model load: " << startup << " s" << std::endl;
-        engine.run(messages, false, 1, false, false);
+        engine.run(session, false, 1, false, false);
         synchronize_gpu();
 
         double total_seconds = 0.0;
         for (size_t i = 0; i < runs; ++i) {
             // Prepare the prompt without generating tokens; reset for each run.
-            engine.run(messages, false, 0, false, false);
+            engine.run(session, false, 0, false, false);
 
             for (size_t token = 0; token < tokens; ++token) {
-                const size_t input_tokens = engine.get_session_size();
+                const size_t input_tokens = session.tokens.size();
                 uint32_t next;
                 synchronize_gpu();
                 const double seconds = elapsed_time([&] {
-                    next = engine.inference();
+                    next = engine.inference(session);
                     synchronize_gpu();
                 });
                 total_seconds += seconds;
-                engine.append_token(next);
+                engine.append_token(session, next);
 
                 std::cout << "Run " << i + 1 << ", token " << token + 1
                           << " (" << input_tokens << " input tokens): "

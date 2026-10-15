@@ -3,22 +3,22 @@
 #include "GGUF.hpp"
 #include "Tokenizer.hpp"
 #include "ChatFormatter.hpp"
+#include "ChatSession.hpp"
 #include "Weight.hpp"
 #include <random>
 
 class Engine {
 public:
     static Engine& start(); 
-    std::string run(const std::vector<ChatMessage>& messages,
+    std::string run(ChatSession& session,
         bool enable_thinking = false, size_t max_new_tokens = 512,
         bool stream_output = true, bool stop_at_eos = true);
 
     uint32_t simulate_inference();
-    uint32_t inference();
+    uint32_t inference(ChatSession& session);
 
-    void append_token(uint32_t token);
+    void append_token(ChatSession& session, uint32_t token);
 
-    size_t get_session_size() const { return chat_session.size(); }
     
 private:
     static const char* const model_path;
@@ -38,7 +38,6 @@ private:
     EmbedLookup embedlookup; 
     
     std::map<std::string, Weight> weights;
-    std::vector<uint32_t> chat_session;
     uint32_t eos_token;
     std::mt19937 random{std::random_device{}()}; 
 };

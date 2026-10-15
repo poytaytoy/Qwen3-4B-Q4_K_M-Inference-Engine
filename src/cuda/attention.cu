@@ -9,7 +9,7 @@ constexpr unsigned tile_size = 16;
 // One block per query token/head. Online softmax keeps only a K/V tile,
 // a running normalization and the output accumulator, never a T-by-T matrix.
 __global__ void attention_kernel(const float* q, const float* k, const float* v,
-    float* output, size_t tokens, size_t query_heads, size_t kv_heads, size_t head_dim) {
+    float* output, size_t tokens, size_t query_heads, size_t kv_heads, size_t head_dim, size_t query_offset) {
     extern __shared__ float tile[];
     float* keys = tile;
     float* values = keys + tile_size * head_dim;
@@ -19,7 +19,7 @@ __global__ void attention_kernel(const float* q, const float* k, const float* v,
     __shared__ float correction;
 
     const size_t query_row = blockIdx.x;
-    const size_t token = query_row / query_heads;
+    const size_t token = query_offset + query_row / query_heads;
     const size_t head = query_row % query_heads;
     const size_t kv_head = head / (query_heads / kv_heads);
     const float* query = q + query_row * head_dim;
@@ -94,7 +94,7 @@ __global__ void attention_kernel(const float* q, const float* k, const float* v,
 namespace kernels {
 
 void attention(const float* q, const float* k, const float* v, float* output,
-    size_t tokens, size_t query_heads, size_t kv_heads, size_t head_dim) {
+    size_t tokens, size_t query_heads, size_t kv_heads, size_t head_dim, size_t query_offset) {
     if (tokens == 0) return;
     if (!q || !k || !v || !output || kv_heads == 0 || query_heads == 0 ||
         query_heads % kv_heads != 0 || head_dim == 0 || head_dim > 256 ||
@@ -103,7 +103,7 @@ void attention(const float* q, const float* k, const float* v, float* output,
 
     const size_t shared_bytes = 2 * tile_size * head_dim * sizeof(float);
     attention_kernel<<<tokens * query_heads, attention_threads, shared_bytes>>>(
-        q, k, v, output, tokens, query_heads, kv_heads, head_dim);
+        q, k, v, output, tokens, query_heads, kv_heads, head_dim, query_offset);
     detail::check_launch();
 }
 
