@@ -81,12 +81,14 @@ This reports milliseconds per projection pair for 1, 32, and 100 input tokens,
 using one stream or separate streams. These are kernel benchmark timings, not
 end-to-end generation speed.
 
-The application defaults to v2 with CUDA graph replay for cached single-token
-decoding. To compare with ordinary launches or the original FP32 kernels:
+The application defaults to v2, which quantizes inputs to Q8 for packed integer dots.
 
-```sh
-INFERENCE_CUDA_GRAPHS=0 ./build/release/benchmark/benchmark 32 3
-INFERENCE_MATMUL=v1 ./build/release/benchmark/benchmark 32 3
-```
+### Measured results
 
-v2 includes input quantization overhead and changes activation precision.
+RTX 4060 Laptop GPU (24 SMs, 8 GB), Release build, Qwen3-4B-Q4_K_M:
+32 output tokens per run, 3 runs, and the default 23-token prompt after warmup.
+
+Cached generation speed: **63.1 tokens/s**.
+
+This excludes the first token, prompt processing, model loading, and tokenization.
+Results vary with GPU clocks, power limits, and prompt length.
