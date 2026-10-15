@@ -68,7 +68,7 @@ Measure inference speed in generated tokens per second:
 The inference benchmark warms up first, reports model loading separately, and
 measures each generated token. KV caching is not implemented yet.
 
-Compare kernel1 and tiled kernel2 on real Q4_K/Q6_K projections:
+Benchmark kernel1 on real Q4_K/Q6_K projections:
 
 ```sh
 ./build/release/benchmark/matmul_benchmark
