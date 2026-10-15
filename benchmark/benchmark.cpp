@@ -2,6 +2,7 @@
 #include <cuda_runtime.h>
 #include <charconv>
 #include <chrono>
+#include <cstdlib>
 #include <functional>
 #include <iomanip>
 #include <iostream>
@@ -40,6 +41,12 @@ int main(int argc, char* argv[]) {
         ChatSession session;
         session.messages = messages;
 
+        const char* matmul_option = std::getenv("INFERENCE_MATMUL");
+        const char* graph_option = std::getenv("INFERENCE_CUDA_GRAPHS");
+        const bool packed = !matmul_option || std::string_view(matmul_option) != "v1";
+        const bool graphs = packed && (!graph_option || std::string_view(graph_option) != "0");
+        std::cout << "Matmul: " << (packed ? "v2" : "v1")
+                  << " | CUDA graphs: " << (graphs ? "on" : "off") << '\n';
         std::cout << std::fixed << std::setprecision(3);
         const double startup = elapsed_time([] { Engine::start(); synchronize_gpu(); });
         Engine& engine = Engine::start();

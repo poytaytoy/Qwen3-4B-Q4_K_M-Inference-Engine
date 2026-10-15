@@ -4,10 +4,10 @@
 
 namespace kernels {
 void matmul(const float* input, const Weight& weight, float* output, size_t rows, cudaStream_t stream) {
-    // Keep v1 as the default; select the experimental path per process.
+    // Packed v2 is the default; retain v1 for explicit comparisons.
     static const bool packed = [] {
         const char* version = std::getenv("INFERENCE_MATMUL");
-        return version && std::string_view(version) == "v2";
+        return !version || std::string_view(version) != "v1";
     }();
     if (packed) v2::matmul(input, weight, output, rows, stream);
     else v1::matmul(input, weight, output, rows, stream);

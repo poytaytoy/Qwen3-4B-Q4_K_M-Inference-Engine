@@ -3,7 +3,6 @@
 #include <cmath>
 
 namespace {
-constexpr unsigned warp_width = 32;
 constexpr unsigned warps_per_row = 4;
 
 __device__ float warp_sum(float value) {
@@ -109,7 +108,7 @@ void check(cudaError_t error) {
 } // namespace
 
 namespace kernels::v2 {
-void matmul(const float* input, const Weight& weight, float* output, size_t rows, cudaStream_t stream) {
+void matmul_with_workspace(const float* input, const Weight& weight, float* output, size_t rows, void* workspace, cudaStream_t stream) {
     if (weight.datatype != GGML_TYPE_Q4_K && weight.datatype != GGML_TYPE_Q6_K)
         throw std::invalid_argument("matmul supports Q4_K and Q6_K weights only");
     if (weight.dimension.size() < 2 || weight.dimension[0] <= 0 ||
@@ -117,25 +116,37 @@ void matmul(const float* input, const Weight& weight, float* output, size_t rows
         throw std::invalid_argument("Invalid matmul weight dimensions");
     if (rows == 0) return;
     const size_t width = weight.dimension[0], columns = weight.dimension[1], count = rows * width;
-    void* workspace = nullptr;
-    check(cudaMallocAsync(&workspace, count + (count / 32) * sizeof(float), stream));
     auto* codes = static_cast<int8_t*>(workspace);
     auto* scales = reinterpret_cast<float*>(codes + count);
+    quantize<<<(count + 255) / 256, 256, 0, stream>>>(input, codes, scales, count);
+    detail::check_launch();
+    const dim3 grid(columns, rows);
+    if (weight.datatype == GGML_TYPE_Q4_K)
+        project<GGML_TYPE_Q4_K><<<grid, warps_per_row * 32, 0, stream>>>(
+            static_cast<const uint8_t*>(weight.device_buffer.data), codes, scales, output, width, columns);
+    else
+        project<GGML_TYPE_Q6_K><<<grid, warps_per_row * 32, 0, stream>>>(
+            static_cast<const uint8_t*>(weight.device_buffer.data), codes, scales, output, width, columns);
+    detail::check_launch();
+}
+
+void matmul(const float* input, const Weight& weight, float* output, size_t rows, cudaStream_t stream) {
+    if (weight.datatype != GGML_TYPE_Q4_K && weight.datatype != GGML_TYPE_Q6_K)
+        throw std::invalid_argument("matmul supports Q4_K and Q6_K weights only");
+    if (weight.dimension.size() < 2 || weight.dimension[0] <= 0 ||
+        weight.dimension[0] % 256 != 0 || weight.dimension[1] <= 0)
+        throw std::invalid_argument("Invalid matmul weight dimensions");
+    if (rows == 0) return;
+    const size_t count = rows * weight.dimension[0];
+    void* workspace = nullptr;
+    check(cudaMallocAsync(&workspace, count + (count / 32) * sizeof(float), stream));
     try {
-        quantize<<<(count + 255) / 256, 256, 0, stream>>>(input, codes, scales, count);
-        detail::check_launch();
-        const dim3 grid(columns, rows);
-        if (weight.datatype == GGML_TYPE_Q4_K)
-            project<GGML_TYPE_Q4_K><<<grid, warps_per_row * 32, 0, stream>>>(
-                static_cast<const uint8_t*>(weight.device_buffer.data), codes, scales, output, width, columns);
-        else
-            project<GGML_TYPE_Q6_K><<<grid, warps_per_row * 32, 0, stream>>>(
-                static_cast<const uint8_t*>(weight.device_buffer.data), codes, scales, output, width, columns);
-        detail::check_launch();
+        matmul_with_workspace(input, weight, output, rows, workspace, stream);
     } catch (...) {
         cudaFreeAsync(workspace, stream);
         throw;
     }
     check(cudaFreeAsync(workspace, stream));
 }
+
 } // namespace kernels::v2

@@ -29,12 +29,12 @@ using detail::check_launch;
 using detail::threads;
 
 void rms_norm(const float* input, const Weight& scale, float* output,
-    size_t rows, size_t width, float epsilon) {
+    size_t rows, size_t width, float epsilon, cudaStream_t stream) {
     if (rows == 0) return;
     if (width == 0 || !(epsilon > 0.0f) || scale.datatype != GGML_TYPE_F32 ||
         scale.dimension.empty() || static_cast<size_t>(scale.dimension[0]) != width)
         throw std::invalid_argument("RMSNorm requires an F32 scale matching the row width and positive epsilon");
-    rms_norm_kernel<<<rows, threads>>>(input, static_cast<const float*>(scale.device_buffer.data), output, width, epsilon);
+    rms_norm_kernel<<<rows, threads, 0, stream>>>(input, static_cast<const float*>(scale.device_buffer.data), output, width, epsilon);
     check_launch();
 }
 }

@@ -21,6 +21,9 @@ public:
 
     
 private:
+    uint32_t decode(ChatSession& session);
+    void enqueue_decode(ChatSession& session, DecodeGraph& graph);
+
     static const char* const model_path;
 
     ~Engine() = default;

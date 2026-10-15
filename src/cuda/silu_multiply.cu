@@ -16,9 +16,9 @@ namespace kernels {
 using detail::check_launch;
 using detail::threads;
 
-void silu_multiply(const float* gate, const float* up, float* output, size_t count) {
+void silu_multiply(const float* gate, const float* up, float* output, size_t count, cudaStream_t stream) {
     if (count == 0) return;
-    silu_multiply_kernel<<<(count + threads - 1) / threads, threads>>>(gate, up, output, count);
+    silu_multiply_kernel<<<(count + threads - 1) / threads, threads, 0, stream>>>(gate, up, output, count);
     check_launch();
 }
 }

@@ -41,7 +41,7 @@ TEST_CASE("Matmul Q4_K and Q6_K match real model CPU reference and overwrite reu
             std::vector<float> actual(rows * columns, 123.0f);
             DeviceBuffer device_output(actual.data(), actual.size() * sizeof(float));
             for (int repeat = 0; repeat < 2; ++repeat) {
-                kernels::matmul(static_cast<const float*>(device_input.data), weight,
+                kernels::v1::matmul(static_cast<const float*>(device_input.data), weight,
                     static_cast<float*>(device_output.data), rows);
                 REQUIRE(cudaMemcpy(actual.data(), device_output.data, actual.size() * sizeof(float),
                     cudaMemcpyDeviceToHost) == cudaSuccess);
@@ -51,10 +51,10 @@ TEST_CASE("Matmul Q4_K and Q6_K match real model CPU reference and overwrite reu
             // Independent outputs on nonblocking streams; explicitly join before reading.
             DeviceBuffer other_output(actual.data(), actual.size() * sizeof(float));
             kernels::CudaStream first, second;
-            kernels::matmul(static_cast<const float*>(device_input.data), weight,
-                static_cast<float*>(device_output.data), rows, first);
-            kernels::matmul(static_cast<const float*>(device_input.data), weight,
-                static_cast<float*>(other_output.data), rows, second);
+            kernels::v1::matmul(static_cast<const float*>(device_input.data), weight,
+                static_cast<float*>(device_output.data), rows, first.get());
+            kernels::v1::matmul(static_cast<const float*>(device_input.data), weight,
+                static_cast<float*>(other_output.data), rows, second.get());
             first.synchronize();
             second.synchronize();
             for (const auto* buffer : {&device_output, &other_output}) {
@@ -65,7 +65,7 @@ TEST_CASE("Matmul Q4_K and Q6_K match real model CPU reference and overwrite reu
             }
             // A second call with different input must replace the previous product.
             REQUIRE(cudaMemset(device_input.data, 0, input.size() * sizeof(float)) == cudaSuccess);
-            kernels::matmul(static_cast<const float*>(device_input.data), weight,
+            kernels::v1::matmul(static_cast<const float*>(device_input.data), weight,
                 static_cast<float*>(device_output.data), 1);
             REQUIRE(cudaMemcpy(actual.data(), device_output.data, columns * sizeof(float),
                 cudaMemcpyDeviceToHost) == cudaSuccess);
@@ -120,7 +120,7 @@ TEST_CASE("Matmul dispatch matches real weights around the row threshold", "[mat
                 float* product = static_cast<float*>(output.data) + 1;
                 kernels::CudaStream stream;
                 for (int repeat = 0; repeat < 2; ++repeat) {
-                    kernels::matmul(static_cast<const float*>(device_input.data), weight, product, rows, stream);
+                    kernels::v1::matmul(static_cast<const float*>(device_input.data), weight, product, rows, stream.get());
                     stream.synchronize();
                     REQUIRE(cudaMemcpy(actual.data(), output.data, actual.size() * sizeof(float), cudaMemcpyDeviceToHost) == cudaSuccess);
                     REQUIRE(actual.front() == 123.0f);
@@ -129,7 +129,7 @@ TEST_CASE("Matmul dispatch matches real weights around the row threshold", "[mat
                         REQUIRE(actual[i + 1] == Catch::Approx(expected[i]).margin(3e-5).epsilon(1e-4));
                 }
                 REQUIRE(cudaMemset(device_input.data, 0, input.size() * sizeof(float)) == cudaSuccess);
-                kernels::matmul(static_cast<const float*>(device_input.data), weight, product, rows);
+                kernels::v1::matmul(static_cast<const float*>(device_input.data), weight, product, rows);
                 REQUIRE(cudaMemcpy(actual.data(), output.data, actual.size() * sizeof(float), cudaMemcpyDeviceToHost) == cudaSuccess);
                 for (size_t i = 0; i < expected.size(); ++i) REQUIRE(actual[i + 1] == 0.0f);
             }

@@ -41,17 +41,22 @@ void check_cuda(cudaError_t error) {
 
 namespace kernels {
 
+void argmax_device(const float* logits, unsigned long long* result, size_t vocabulary_size, cudaStream_t stream) {
+    if (!logits || !result || vocabulary_size == 0 || vocabulary_size > UINT32_MAX)
+        throw std::invalid_argument("Invalid argmax input");
+    check_cuda(cudaMemsetAsync(result, 0, sizeof(*result), stream));
+    const unsigned blocks = std::min(size_t{256}, (vocabulary_size + threads - 1) / threads);
+    argmax_kernel<<<blocks, threads, 0, stream>>>(logits, result, vocabulary_size);
+    detail::check_launch();
+}
+
 uint32_t argmax(const float* logits, size_t vocabulary_size) {
     if (!logits || vocabulary_size == 0 || vocabulary_size > UINT32_MAX)
         throw std::invalid_argument("Invalid argmax input");
 
     DeviceBuffer storage(sizeof(unsigned long long));
     auto* device_result = static_cast<unsigned long long*>(storage.data);
-    check_cuda(cudaMemset(device_result, 0, sizeof(unsigned long long)));
-
-    const unsigned blocks = std::min(size_t{256}, (vocabulary_size + threads - 1) / threads);
-    argmax_kernel<<<blocks, threads>>>(logits, device_result, vocabulary_size);
-    detail::check_launch();
+    argmax_device(logits, device_result, vocabulary_size, nullptr);
 
     unsigned long long result;
     check_cuda(cudaMemcpy(&result, device_result, sizeof(result), cudaMemcpyDeviceToHost));

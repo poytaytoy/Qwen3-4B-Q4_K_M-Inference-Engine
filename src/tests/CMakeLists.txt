@@ -7,6 +7,7 @@ add_executable(inference_tests
     MatmulTests.cpp
     MatmulQuantizedTests.cpp
     AttentionTests.cpp
+    DecodeGraphTests.cpp
 )
 target_link_libraries(inference_tests PRIVATE inference_core Catch2::Catch2WithMain)
 

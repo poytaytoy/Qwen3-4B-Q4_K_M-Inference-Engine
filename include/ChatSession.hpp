@@ -1,6 +1,8 @@
 #pragma once
 #include "ChatFormatter.hpp"
 #include "Weight.hpp"
+#include "DecodeGraph.hpp"
+#include <memory>
 #include <cstddef>
 #include <map>
 #include <stdexcept>
@@ -21,6 +23,7 @@ struct ChatSession {
     std::vector<uint32_t> tokens;
     // Per-layer K/V buffers and their dimensions.
     std::map<std::string, CacheEntry> cache;
+    std::unique_ptr<DecodeGraph> decode_graph;
     std::size_t cached_tokens = 0;
     // Maximum token capacity of each per-layer K/V buffer.
     std::size_t cache_capacity = 2048;

@@ -1,6 +1,8 @@
 #include "Engine.hpp"
 #include "Kernels.hpp"
 #include <format>
+#include <cstdlib>
+#include <string_view>
 #include <stdexcept>
 
 const char* const Engine::model_path = INFERENCE_MODEL_PATH;
@@ -41,6 +43,11 @@ uint32_t Engine::inference(ChatSession& session) {
     if (offset >= session.tokens.size())
         throw std::invalid_argument("Inference requires uncached tokens");
     const size_t tokens = session.tokens.size() - offset;
+    const char* graph_option = std::getenv("INFERENCE_CUDA_GRAPHS");
+    const char* matmul_option = std::getenv("INFERENCE_MATMUL");
+    const bool graphs = !graph_option || std::string_view(graph_option) != "0";
+    const bool packed = !matmul_option || std::string_view(matmul_option) != "v1";
+    if (tokens == 1 && graphs && packed) return decode(session);
     const size_t width = embedlookup.get_embedding_size();
     const size_t heads = gguf.get_attention_head_count().value();
     const size_t kv_heads = gguf.get_value<uint32_t>("qwen3.attention.head_count_kv").value();

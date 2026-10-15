@@ -21,14 +21,14 @@ __device__ float warp_max(float value) {
 }
 
 __global__ void attention_kernel(const float* q, const float* k, const float* v,
-    float* output, size_t query_heads, size_t kv_heads, size_t head_dim, size_t query_offset) {
+    float* output, size_t query_heads, size_t kv_heads, size_t head_dim, size_t query_offset, const kernels::DecodeToken* metadata) {
     __shared__ float scores[key_tile_rows];
     __shared__ float weights[key_tile_rows];
     __shared__ float previous_scale;
     __shared__ float normalizer;
 
     const size_t query_row = blockIdx.x;
-    const size_t position = query_offset + query_row / query_heads;
+    const size_t position = (metadata ? metadata->position : query_offset) + query_row / query_heads;
     const size_t head = query_row % query_heads;
     const size_t kv_head = head / (query_heads / kv_heads);
     const size_t kv_width = kv_heads * head_dim;
@@ -93,7 +93,7 @@ __global__ void attention_kernel(const float* q, const float* k, const float* v,
 
 namespace kernels {
 void attention(const float* q, const float* k, const float* v, float* output,
-    size_t tokens, size_t query_heads, size_t kv_heads, size_t head_dim, size_t query_offset) {
+    size_t tokens, size_t query_heads, size_t kv_heads, size_t head_dim, size_t query_offset, cudaStream_t stream, const DecodeToken* metadata) {
     if (tokens == 0) return;
     if (!q || !k || !v || !output || kv_heads == 0 || query_heads == 0 ||
         query_heads % kv_heads != 0 || head_dim == 0 || head_dim > 256 ||
@@ -104,8 +104,8 @@ void attention(const float* q, const float* k, const float* v, float* output,
     if (tokens > max_cached_tokens || query_offset > max_cached_tokens - tokens)
         throw std::invalid_argument("Attention cache dimensions overflow");
 
-    attention_kernel<<<tokens * query_heads, attention_threads>>>(
-        q, k, v, output, query_heads, kv_heads, head_dim, query_offset);
+    attention_kernel<<<tokens * query_heads, attention_threads, 0, stream>>>(
+        q, k, v, output, query_heads, kv_heads, head_dim, query_offset, metadata);
     detail::check_launch();
 }
 } // namespace kernels

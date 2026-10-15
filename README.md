@@ -46,7 +46,7 @@ ctest --preset dev -N
 ```
 
 Tests use the real model. Tokenizer and ChatFormatter tests run without a GPU;
-embedding, matmul, and stream tests require GPU access.
+embedding, matmul, attention, graph, and stream tests require GPU access.
 
 ## Benchmarks
 
@@ -71,21 +71,22 @@ It reports aggregate tokens/s including prefill, first-token latency, and cached
 decode tokens/s excluding the first token. It generates the requested count even
 if EOS occurs; model loading and prompt tokenization are excluded from throughput.
 
-Compare v1 (FP32 inputs) and experimental v2 (Q8 inputs + packed integer dots):
+Compare v1 (FP32 inputs) and v2 (Q8 inputs + packed integer dots):
 
 ```sh
 ./build/release/benchmark/matmul_benchmark
 ```
 
-The application defaults to v1. To benchmark generation with v2:
-
-```sh
-INFERENCE_MATMUL=v2 ./build/release/benchmark/benchmark 32 3
-```
-
-v2 includes input quantization overhead and changes activation precision.
-
-
 This reports milliseconds per projection pair for 1, 32, and 100 input tokens,
 using one stream or separate streams. These are kernel benchmark timings, not
 end-to-end generation speed.
+
+The application defaults to v2 with CUDA graph replay for cached single-token
+decoding. To compare with ordinary launches or the original FP32 kernels:
+
+```sh
+INFERENCE_CUDA_GRAPHS=0 ./build/release/benchmark/benchmark 32 3
+INFERENCE_MATMUL=v1 ./build/release/benchmark/benchmark 32 3
+```
+
+v2 includes input quantization overhead and changes activation precision.
