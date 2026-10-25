@@ -2,7 +2,7 @@
   "name": "inference-engine",
   "version-string": "0.1.0",
   "builtin-baseline": "da2be01c400dd3ed102c1198752ef44c76aabe37",
-  "dependencies": ["icu", "nlohmann-json", "pcre2"],
+  "dependencies": ["nlohmann-json"],
   "features": {
     "tests": {
       "description": "Build the Catch2 functional tests",

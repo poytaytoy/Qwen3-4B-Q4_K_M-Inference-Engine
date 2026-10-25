@@ -1,91 +1,43 @@
 # Inference Engine
 
-## Requirements
-
-- CMake 3.25+, Ninja, Git, and a CUDA-compatible C++20 compiler with OpenMP support.
-- NVIDIA CUDA toolkit and a CUDA-capable GPU for inference, benchmarks, and GPU tests.
-- Model file at `assets/models/Qwen3-4B-Q4_K_M.gguf`.
-
-vcpkg installs PCRE2, ICU, nlohmann JSON, and Catch2 for tests. CMake downloads
-GGML and minja through FetchContent. Initial configuration requires internet access.
-
-## Setup and build
-
-Run these commands from the repository root:
-
-Download the model if needed with `bash assets/scripts/download_model.sh`.
+Run these commands from the repository root. You need CMake 3.25+, Ninja, Git,
+a CUDA-compatible C++20 compiler with OpenMP support, the NVIDIA CUDA toolkit,
+a CUDA-capable GPU with GPU access enabled, and Rust/Cargo for the tokenizer backend.
 
 ```sh
-git submodule update --init vcpkg
-./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+git submodule update --init --recursive
+
+bash assets/scripts/download_model.sh
+
 cmake --preset release
 cmake --build --preset release -j 4
+
 ./build/release/inference_engine
 ```
 
-To change the model, add `-DMODEL_PATH=/absolute/path/to/model.gguf` when
-configuring, then rebuild. This sets the model for the application, tests, and
-benchmarks; use a compatible Qwen3 GGUF model.
+This is an inference engine for `Qwen3-4B-Q4_K_M.gguf`.
 
-## Tests
+The download script fetches the model and its matching `tokenizer.json` into
+`assets/models/`.
 
-The `dev` preset enables Catch2 tests and builds with Debug settings:
+Type a message at the `User:` prompt to chat. Press Ctrl+D to exit.
 
-```sh
-cmake --preset dev
-cmake --build --preset dev -j 4
-ctest --preset dev
-```
+## Generation performance
 
-Run selected tests or list available tests:
+Using an NVIDIA GeForce RTX 4060 Laptop GPU and
+`Qwen3-4B-Q4_K_M.gguf`. The results are as follows: 
 
-```sh
-ctest --preset dev -R 'Tokenizer|ChatFormatter'
-ctest --preset dev -R 'EmbedLookup|[Mm]atmul|CudaStream'
-ctest --preset dev -N
-```
+Prompt: "Explain what a GPU does in a few sentences." (23 prompt tokens).
 
-Tests use the real model. Tokenizer and ChatFormatter tests run without a GPU;
-embedding, matmul, and stream tests require GPU access.
+| Run | First token | Generated tokens/s afterwards |
+| --- | ---: | ---: |
+| 1 | 178.202 ms | 62.105 |
+| 2 | 190.730 ms | 60.751 |
+| 3 | 190.578 ms | 62.115 |
+| Average | 186.504 ms | 61.650 |
 
-## Benchmarks
+## TODO
 
-Enable benchmark executables in the Release build:
-
-```sh
-cmake --preset release -DBUILD_BENCHMARK=ON
-cmake --build --preset release -j 4
-```
-
-Measure inference speed in generated tokens per second:
-
-```sh
-# Arguments: tokens per run, number of runs, optional prompt
-./build/release/benchmark/benchmark 32 3
-./build/release/benchmark/benchmark 32 3 "Explain what a GPU does."
-```
-
-The inference benchmark warms up first, reports model loading separately, and
-reports throughput for multiple output tokens per run (defaults: 32 tokens, 3 runs).
-It reports aggregate tokens/s including prefill, first-token latency, and cached
-decode tokens/s excluding the first token. It generates the requested count even
-if EOS occurs; model loading and prompt tokenization are excluded from throughput.
-
-Compare v1 (FP32 inputs) and experimental v2 (Q8 inputs + packed integer dots):
-
-```sh
-./build/release/benchmark/matmul_benchmark
-```
-
-The application defaults to v1. To benchmark generation with v2:
-
-```sh
-INFERENCE_MATMUL=v2 ./build/release/benchmark/benchmark 32 3
-```
-
-v2 includes input quantization overhead and changes activation precision.
-
-
-This reports milliseconds per projection pair for 1, 32, and 100 input tokens,
-using one stream or separate streams. These are kernel benchmark timings, not
-end-to-end generation speed.
+- Implement a native C++ Qwen3 tokenizer to replace the awkward Rust dependency from hugging face's.
+- Implement CUDA Graphs for up to 30% speed up 
+- Implement a ChatGPT API-compatible on startup instead of user input

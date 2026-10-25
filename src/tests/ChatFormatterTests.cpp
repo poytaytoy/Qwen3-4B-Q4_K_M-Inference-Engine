@@ -6,12 +6,15 @@
 TEST_CASE("ChatFormatter renders real messages and Qwen prompt options", "[chat]") {
     GGUF model(test_model_path);
     ChatFormatter formatter(model);
-    const std::vector<ChatMessage> messages = {
-        {"system", "Be concise."}, {"user", "Hello there."},
-        {"assistant", "Hi!"}, {"user", "What is two plus two?"}};
+    const std::vector<ChatMessage> messages = {{"system", "Be concise."},
+                                               {"user", "Hello there."},
+                                               {"assistant", "Hi!"},
+                                               {"user", "What is two plus two?"}};
     const auto prompt = formatter.render(messages);
-    for (const auto& message : messages)
+
+    for (const auto &message : messages) {
         REQUIRE(prompt.find(message.content) != std::string::npos);
+    }
     const auto without_generation = formatter.render(messages, false, false);
     REQUIRE(prompt.starts_with(without_generation));
     REQUIRE(prompt.size() > without_generation.size());

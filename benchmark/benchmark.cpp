@@ -2,95 +2,126 @@
 #include <cuda_runtime.h>
 #include <charconv>
 #include <chrono>
-#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <stdexcept>
 #include <string_view>
-#include <utility>
+
+namespace {
+using Clock = std::chrono::steady_clock;
 
 void synchronize_gpu() {
     const auto error = cudaDeviceSynchronize();
-    if (error != cudaSuccess)
-        throw std::runtime_error(cudaGetErrorString(error));
-}
 
-template<typename Function>
-double elapsed_time(Function&& operation) {
-    const auto start = std::chrono::steady_clock::now();
-    std::invoke(std::forward<Function>(operation));
-    return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    if (error != cudaSuccess) {
+        throw std::runtime_error(cudaGetErrorString(error));
+    }
 }
 
 size_t positive_count(std::string_view argument) {
     size_t count = 0;
     const auto [end, error] = std::from_chars(argument.data(), argument.data() + argument.size(), count);
-    if (error != std::errc{} || end != argument.data() + argument.size() || count == 0)
-        throw std::invalid_argument("Token count and run count must be positive integers");
+
+    if (error != std::errc{} || end != argument.data() + argument.size() || count == 0) {
+        throw std::invalid_argument("Output tokens and runs must be positive integers");
+    }
+
     return count;
+}
+
+double seconds_since(Clock::time_point start) {
+    return std::chrono::duration<double>(Clock::now() - start).count();
+}
 }
 
 int main(int argc, char* argv[]) {
     try {
-        if (argc > 4) throw std::invalid_argument("Usage: benchmark [tokens=32] [runs=3] [prompt]");
-        const size_t tokens = argc > 1 ? positive_count(argv[1]) : 32;
+        if (argc > 4 || (argc > 1 && std::string_view(argv[1]) == "--help")) {
+            std::cout << "Usage: benchmark [output-tokens=128] [runs=3] [prompt]\n";
+            return argc > 4 ? 1 : 0;
+        }
+
+        const size_t output_tokens = argc > 1 ? positive_count(argv[1]) : 128;
         const size_t runs = argc > 2 ? positive_count(argv[2]) : 3;
-        const std::vector<ChatMessage> messages{{"user", argc > 3 ? argv[3] : "Explain what a GPU does in a few sentences."}};
+        const std::string prompt = argc > 3 ? argv[3] : "Explain what a GPU does in a few sentences.";
 
-        ChatSession session;
-        session.messages = messages;
+        int device;
+        auto error = cudaGetDevice(&device);
+        cudaDeviceProp properties{};
 
-        std::cout << std::fixed << std::setprecision(3);
-        const double startup = elapsed_time([] { Engine::start(); synchronize_gpu(); });
+        if (error == cudaSuccess) {
+            error = cudaGetDeviceProperties(&properties, device);
+        }
+
+        if (error != cudaSuccess) {
+            throw std::runtime_error(std::string("CUDA GPU access is required: ") + cudaGetErrorString(error));
+        }
+
+        const auto load_start = Clock::now();
         Engine& engine = Engine::start();
-        std::cout << "Model load: " << startup << " s" << std::endl;
-        engine.run(session, false, 2, false, false);
         synchronize_gpu();
 
-        double total_seconds = 0.0, total_decode_seconds = 0.0;
-        for (size_t i = 0; i < runs; ++i) {
-            // Reset the prompt/cache per run; exclude tokenization from timing.
-            engine.run(session, false, 0, false, false);
-            const size_t input_tokens = session.tokens.size();
-            if (input_tokens > session.cache_capacity || tokens > session.cache_capacity - input_tokens)
-                throw std::invalid_argument("Prompt plus output tokens exceeds session capacity");
-            synchronize_gpu();
+        std::cout << std::fixed << std::setprecision(3)
+                  << "GPU: " << properties.name << '\n'
+                  << "Model load: " << seconds_since(load_start) << " s\n";
 
-            // The first prediction includes prompt prefill; later ones use the KV cache.
-            const double first_seconds = elapsed_time([&] {
-                engine.append_token(session, engine.inference(session));
-                synchronize_gpu();
-            });
-            double decode_seconds = 0.0;
-            if (tokens > 1) {
-                decode_seconds = elapsed_time([&] {
-                    for (size_t token = 1; token < tokens; ++token)
-                        engine.append_token(session, engine.inference(session));
-                    synchronize_gpu();
-                });
+        ChatSession session;
+        session.messages = {{"user", prompt}};
+
+        // Warm up the model before measurement; suppress text printing and EOS stopping.
+        engine.run(session, false, 4, false, false);
+        synchronize_gpu();
+
+        double total_decode_seconds = 0;
+        double total_first_seconds = 0;
+
+        for (size_t run = 0; run < runs; ++run) {
+            // Prepare a fresh prompt and reset the KV position outside the timed region.
+            engine.run(session, false, 0, false, false);
+            const size_t prompt_tokens = session.tokens.size();
+
+            if (output_tokens > session.cache_capacity - prompt_tokens) {
+                throw std::invalid_argument("Prompt plus output exceeds session capacity");
             }
-            const double seconds = first_seconds + decode_seconds;
-            total_seconds += seconds;
+
+            synchronize_gpu();
+            const auto first_start = Clock::now();
+            engine.append_token(session, engine.inference(session));
+            synchronize_gpu();
+            const double first_seconds = seconds_since(first_start);
+
+            const auto decode_start = Clock::now();
+
+            for (size_t token = 1; token < output_tokens; ++token) {
+                engine.append_token(session, engine.inference(session));
+            }
+
+            synchronize_gpu();
+            const double decode_seconds = seconds_since(decode_start);
+            total_first_seconds += first_seconds;
             total_decode_seconds += decode_seconds;
 
-            // Generate the requested count even if EOS occurs; no printing is timed.
-            std::cout << "Run " << i + 1 << ": " << input_tokens << " prompt tokens, "
-                      << tokens << " output tokens | " << seconds << " s | "
-                      << tokens / seconds << " tokens/s | first token "
-                      << first_seconds * 1000.0 << " ms";
-            if (tokens > 1)
-                std::cout << " | cached decode " << (tokens - 1) / decode_seconds << " tokens/s";
-            std::cout << std::endl;
-        }
-        const double output_count = static_cast<double>(tokens) * static_cast<double>(runs);
-        std::cout << "Average: " << output_count / total_seconds << " tokens/s | "
-                  << total_seconds * 1000.0 / output_count << " ms/token across "
-                  << runs << " runs (includes prefill)\n";
-        if (tokens > 1)
-            std::cout << "Average cached decode: "
-                      << static_cast<double>(tokens - 1) * static_cast<double>(runs) / total_decode_seconds
-                      << " tokens/s (excludes first token)\n";
+            std::cout << "Run " << run + 1 << ": " << prompt_tokens << " prompt tokens, "
+                      << output_tokens << " generated tokens | "
+                      << "first token " << first_seconds * 1000.0 << " ms";
 
+            if (output_tokens > 1) {
+                std::cout << " | generation after first token " << (output_tokens - 1) / decode_seconds << " tokens/s";
+            }
+
+            std::cout << '\n';
+        }
+
+        std::cout << "Average first token: " << total_first_seconds * 1000.0 / runs << " ms\n";
+
+        if (output_tokens > 1) {
+            std::cout << "Average generation after first token: "
+                      << static_cast<double>(output_tokens - 1) * runs / total_decode_seconds
+                      << " tokens/s\n";
+        }
+
+        std::cout << "Excludes model loading, tokenization, and text printing. "
+                     "Generation continues past EOS to measure a fixed token count.\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

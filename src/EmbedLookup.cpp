@@ -1,5 +1,6 @@
 #include "EmbedLookup.hpp"
 #include "Weight.hpp"
+#include "Kernels.hpp"
 #include "ggml.h"
 #include <cstdint>
 #include <cstring>
@@ -46,93 +47,32 @@ EmbedLookup& EmbedLookup::operator=(EmbedLookup&& other) noexcept {
 }
 
 DeviceBuffer EmbedLookup::lookup(const std::vector<uint32_t>& token_ids) const {
-    for (auto id : token_ids)
-        if (id >= vocabulary_size_) throw std::out_of_range("Embedding token ID out of range");
-    
-    if (embedding_size_ && token_ids.size() > std::numeric_limits<size_t>::max() / embedding_size_)
-        throw std::length_error("Embedding lookup result is too large");
-    
-    using RowConverter = void (EmbedLookup::*)(const std::byte*, float*) const;
-    RowConverter convert;
-    switch (type_) {
-        case GGML_TYPE_F32:  convert = &EmbedLookup::dequantize_row_fp32; break;
-        case GGML_TYPE_Q4_K: convert = &EmbedLookup::dequantize_row_q4k; break;
-        case GGML_TYPE_Q6_K: convert = &EmbedLookup::dequantize_row_q6k; break;
-        default: throw std::invalid_argument("Unsupported embedding storage type");
-    }
-
-    std::vector<float> output(token_ids.size() * embedding_size_);
-    #pragma omp parallel for schedule(static) if(token_ids.size() >= 32 && output.size() >= 65536)
-    for (size_t i = 0; i < token_ids.size(); ++i) {
-        (this->*convert)(table_.data() + static_cast<size_t>(token_ids[i]) * row_bytes_,
-            output.data() + i * embedding_size_);
-    }
-
-    return DeviceBuffer(output.data(), output.size() * sizeof(float));
-}
-
-void EmbedLookup::dequantize_row_fp32(const std::byte* source, float* output) const {
-    std::memcpy(output, source, row_bytes_);
-}
-
-void EmbedLookup::dequantize_row_q4k(const std::byte* source, float* __restrict output) const {
-    for (size_t i = 0; i < embedding_size_ / 256; ++i) {
-        const std::byte* block = source + i * 144;
-        const auto* header = reinterpret_cast<const ggml_fp16_t*>(block);
-        const float d = ggml_fp16_to_fp32(header[0]);
-        const float dmin = ggml_fp16_to_fp32(header[1]);
-        const auto* scales = reinterpret_cast<const uint8_t*>(block + 4);
-        const auto* qs = reinterpret_cast<const uint8_t*>(block + 16);
-
-        for (int group = 0; group < 8; ++group) {
-            const int scale = group < 4 ? scales[group] & 63
-                : (scales[group + 4] & 15) | ((scales[group - 4] >> 6) << 4);
-
-            const int min = group < 4 ? scales[group + 4] & 63
-                : (scales[group + 4] >> 4) | ((scales[group] >> 6) << 4);
-
-            const float multiplier = d * scale;
-            const float offset = dmin * min;
-            const auto* quants = qs + (group / 2) * 32;
-            const int shift = (group % 2) * 4;
-            float* dst = output + i * 256 + group * 32;
-
-            #pragma omp simd
-            for (int j = 0; j < 32; ++j)
-                dst[j] = multiplier * ((quants[j] >> shift) & 15) - offset;
+    for (auto id : token_ids){
+        if (id >= vocabulary_size_) {
+            throw std::out_of_range("Embedding token ID out of range");
         }
     }
-}
-
-void EmbedLookup::dequantize_row_q6k(const std::byte* source, float* __restrict output) const {
-    size_t quantize_to_lookup = embedding_size_ / 256; 
-
-    for (size_t i = 0; i < quantize_to_lookup; i ++ ){
-        const std::byte* quant_block = source + i * 210;
-        const int8_t* scales = reinterpret_cast<const int8_t*>(quant_block + 192);         
-        float d = ggml_fp16_to_fp32(reinterpret_cast<const ggml_fp16_t*>(quant_block + 208)[0]);
-        const uint8_t* ql = reinterpret_cast<const uint8_t*>(quant_block);
-        const uint8_t* qh = reinterpret_cast<const uint8_t*>(quant_block + 128); 
-
-        #pragma omp simd
-        for (int j = 0; j < 256; j++){
-
-            int half = j / 128;
-            int group = (j % 128) / 32;
-            int position = j % 32;
-
-            uint8_t upper = qh[half * 32 + position];
-            uint8_t lower = ql[half * 64 + (group % 2) * 32 + position];
-
-            upper = (upper >> (2 * group)) & 3;
-            lower = (lower >> (4 * (group / 2))) & 15;
-            
-            int8_t scale = (scales + (j / 16))[0];
-
-            int16_t q = (upper << 4) + lower;
-            q -= 32; 
-            
-            output[i * 256 + j] = d * scale * q;
-        }
+        
+    if (type_ != GGML_TYPE_F32 && type_ != GGML_TYPE_Q4_K && type_ != GGML_TYPE_Q6_K){
+        throw std::invalid_argument("Unsupported embedding storage type");
     }
+
+    const size_t count = token_ids.size() * embedding_size_;
+    if (token_ids.empty()) return DeviceBuffer(size_t{0});
+
+    std::vector<std::byte> packed(token_ids.size() * row_bytes_);
+
+    for (size_t i = 0; i < token_ids.size(); ++i){
+        std::memcpy(packed.data() + i * row_bytes_,table_.data() + static_cast<size_t>(token_ids[i]) * row_bytes_, row_bytes_);
+    }
+        
+    DeviceBuffer device_rows(packed.data(), packed.size());
+    if (type_ == GGML_TYPE_F32) return device_rows;
+
+    DeviceBuffer output(count * sizeof(float));
+
+    kernels::dequantize_embeddings(device_rows.data, static_cast<float*>(output.data),
+        token_ids.size(), embedding_size_, row_bytes_, type_);
+
+    return output;
 }

@@ -127,6 +127,7 @@ const GGUF::TensorInfo* GGUF::get_tensor_info(const std::string& name) const {
 const ggml_tensor* GGUF::get_tensor(const std::string& name) const {
     return weights_ ? ggml_get_tensor(weights_.get(), name.c_str()) : nullptr;
 }
+
 std::vector<std::byte> GGUF::read_tensor_data(const std::string& name) const {
     const auto* info = get_tensor_info(name);
     std::ifstream file(path_, std::ios::binary | std::ios::ate);
@@ -135,8 +136,7 @@ std::vector<std::byte> GGUF::read_tensor_data(const std::string& name) const {
     if (end < 0 || info->file_offset > static_cast<uint64_t>(end) ||
         info->bytes > static_cast<uint64_t>(end) - info->file_offset)
         throw std::runtime_error("Incomplete GGUF tensor data: " + name);
-    if (info->bytes > static_cast<size_t>(std::numeric_limits<std::streamsize>::max()))
-        throw std::runtime_error("Tensor too large to read: " + name);
+    
     file.seekg(static_cast<std::streamoff>(info->file_offset));
     std::vector<std::byte> data(info->bytes);
     if (!file.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size())))
@@ -168,7 +168,6 @@ const std::vector<std::string>& GGUF::get_merges() const { return known_array<st
 std::optional<uint32_t> GGUF::get_bos_token_id() const { return get_value<uint32_t>("tokenizer.ggml.bos_token_id"); }
 std::optional<uint32_t> GGUF::get_eos_token_id() const { return get_value<uint32_t>("tokenizer.ggml.eos_token_id"); }
 
-// Add this public method to GGUF:
 void GGUF::free_weights() {
-    weights_.reset(); // Calls ggml_free()
+    weights_.reset(); 
 }

@@ -1,36 +1,64 @@
 #include "Kernels.hpp"
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <math_constants.h>
 
 namespace {
 using kernels::detail::threads;
+constexpr float negative_infinity = -std::numeric_limits<float>::infinity();
+struct candidate {
+    size_t index;
+    float score;
 
-// Pack score and ID together so atomicMax selects a consistent winner.
-__device__ unsigned long long candidate(float value, uint32_t index) {
-    if (isnan(value)) value = -CUDART_INF_F;
-    if (value == 0.0f) value = 0.0f; // Give +0 and -0 identical ordering.
-    const uint32_t bits = __float_as_uint(value);
-    const uint32_t ordered = bits & 0x80000000u ? ~bits : bits ^ 0x80000000u;
-    return (static_cast<unsigned long long>(ordered) << 32) | ~index;
+    __host__ __device__ static candidate init(){
+        return candidate{SIZE_MAX, negative_infinity};
+    }
+};
+
+__host__ __device__ inline void max(candidate& best, candidate& other){
+    if (other.score > best.score || (other.score == best.score && other.index < best.index)){
+        best = other;  
+    }
 }
 
-__global__ void argmax_kernel(const float* logits, unsigned long long* result, size_t count) {
-    __shared__ unsigned long long block_best;
-    if (threadIdx.x == 0) block_best = 0;
-    __syncthreads();
+__global__ void argmax_kernel(const float* __restrict logits, candidate* __restrict result, size_t count, size_t stride_per_thread) {
+    const size_t threadId = blockIdx.x * blockDim.x + threadIdx.x; 
+    candidate best = candidate::init();
+    
+    for (size_t i = 0; i < stride_per_thread; i++){
+        const size_t stride_threadId = threadId + i * (gridDim.x * blockDim.x); 
+        if (stride_threadId < count && logits[stride_threadId] > best.score){
+            best = {stride_threadId, logits[stride_threadId]}; 
+        } 
+    }
 
-    unsigned long long best = 0;
-    for (size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-         i < count; i += static_cast<size_t>(gridDim.x) * blockDim.x)
-        best = max(best, candidate(logits[i], static_cast<uint32_t>(i)));
+    for (int offset = 16; offset > 0; offset /= 2) {
+        candidate other = {
+            __shfl_down_sync(0xffffffffu, best.index, offset),
+            __shfl_down_sync(0xffffffffu, best.score, offset)
+        };
+        max(best, other); 
+    }
 
-    for (int offset = 16; offset > 0; offset /= 2)
-        best = max(best, __shfl_down_sync(0xffffffffu, best, offset));
+    int lane = threadIdx.x % 32;
+    int warp = threadIdx.x / 32;
 
-    if (threadIdx.x % 32 == 0) atomicMax(&block_best, best);
-    __syncthreads();
-    if (threadIdx.x == 0) atomicMax(result, block_best);
-}
+    constexpr int block_best_size = threads / 32; 
+    __shared__ candidate block_best[block_best_size];
+    if (lane == 0){
+        block_best[warp] = best; 
+    }
+
+    __syncthreads(); 
+
+    if (lane == 0 && warp == 0){
+        for (int i = 0; i < block_best_size; ++i){
+            max(best, block_best[i]); 
+        }
+        result[blockIdx.x] = best;
+    }
+}   
 
 void check_cuda(cudaError_t error) {
     if (error != cudaSuccess)
@@ -45,17 +73,28 @@ uint32_t argmax(const float* logits, size_t vocabulary_size) {
     if (!logits || vocabulary_size == 0 || vocabulary_size > UINT32_MAX)
         throw std::invalid_argument("Invalid argmax input");
 
-    DeviceBuffer storage(sizeof(unsigned long long));
-    auto* device_result = static_cast<unsigned long long*>(storage.data);
-    check_cuda(cudaMemset(device_result, 0, sizeof(unsigned long long)));
+    const int sm_count = detail::get_sm_count();
 
-    const unsigned blocks = std::min(size_t{256}, (vocabulary_size + threads - 1) / threads);
-    argmax_kernel<<<blocks, threads>>>(logits, device_result, vocabulary_size);
+    DeviceBuffer storage(sizeof(candidate) * sm_count);
+    auto* device_result = static_cast<candidate*>(storage.data);
+
+    constexpr int THREADS_PER_BLOCK = threads; 
+
+    size_t elem_per_sm = vocabulary_size / sm_count;
+    size_t stride_per_thread = elem_per_sm / THREADS_PER_BLOCK + 1;  
+
+    argmax_kernel<<<sm_count, THREADS_PER_BLOCK>>>(logits, device_result, vocabulary_size, stride_per_thread);
     detail::check_launch();
 
-    unsigned long long result;
-    check_cuda(cudaMemcpy(&result, device_result, sizeof(result), cudaMemcpyDeviceToHost));
-    return ~static_cast<uint32_t>(result);
+    std::vector<candidate> results(sm_count);
+    check_cuda(cudaMemcpy(results.data(), device_result, sizeof(candidate) * sm_count, cudaMemcpyDeviceToHost));
+    
+    candidate best = candidate::init(); 
+    for (auto& other: results){
+        max(best, other);
+    }
+    
+    return best.index;
 }
 
 }

@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
+set(VCPKG_MANIFEST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party" CACHE PATH "vcpkg manifest directory")
 project(InferenceEngine LANGUAGES C CXX CUDA)
 
 set(MODEL_PATH "${PROJECT_SOURCE_DIR}/assets/models/Qwen3-4B-Q4_K_M.gguf"
@@ -13,8 +14,6 @@ find_package(OpenMP REQUIRED COMPONENTS CXX)
 
 include(CTest)
 include(FetchContent)
-find_package(pcre2 CONFIG REQUIRED)
-find_package(ICU REQUIRED COMPONENTS uc)
 find_package(nlohmann_json CONFIG REQUIRED)
 
 # Make minja's FetchContent request reuse the vcpkg JSON package.
@@ -23,7 +22,7 @@ FetchContent_Declare(json FIND_PACKAGE_ARGS CONFIG REQUIRED NAMES nlohmann_json)
 # Only the GGUF reader and core tensor storage are needed.
 # FORCE clears backend settings left over from earlier configurations.
 set(GGML_CUDA OFF CACHE BOOL "Enable ggml CUDA backend" FORCE)
-set(GGML_CPU OFF CACHE BOOL "Enable ggml CPU backend" FORCE)
+set(GGML_CPU ${BUILD_TESTING} CACHE BOOL "Enable ggml CPU backend for test references" FORCE)
 set(GGML_OPENMP OFF CACHE BOOL "Enable ggml OpenMP support" FORCE)
 set(GGML_BUILD_TESTS OFF CACHE BOOL "Build ggml tests" FORCE)
 set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "Build ggml examples" FORCE)
@@ -47,6 +46,8 @@ FetchContent_Declare(minja
 )
 FetchContent_MakeAvailable(minja)
 
+add_subdirectory(third_party/tokenizers-cpp)
+
 file(GLOB SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cu"
@@ -69,7 +70,7 @@ set_target_properties(inference_core PROPERTIES
     CUDA_STANDARD_REQUIRED ON
 )
 
-target_link_libraries(inference_core PUBLIC ggml-base PCRE2::8BIT ICU::uc CUDA::cudart minja OpenMP::OpenMP_CXX)
+target_link_libraries(inference_core PUBLIC ggml-base CUDA::cudart minja tokenizers_cpp nlohmann_json::nlohmann_json OpenMP::OpenMP_CXX)
 
 add_executable(inference_engine src/main.cpp)
 target_link_libraries(inference_engine PRIVATE inference_core)

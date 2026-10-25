@@ -13,11 +13,15 @@ const char* const Engine::model_path = INFERENCE_MODEL_PATH;
 
 Engine::Engine(const std::filesystem::path& file)
     : gguf(file, false), tokenizer(gguf), chat_formatter(gguf), embedlookup(gguf) {
+    
     for (const auto& tensor : gguf.get_tensors())
         weights.try_emplace(tensor.name, gguf, tensor.name);
+    
     const auto eos = gguf.get_eos_token_id();
+    
     if (!eos || *eos >= gguf.get_tokens().size())
         throw std::invalid_argument("Model requires a valid EOS token");
+    
     eos_token = static_cast<uint32_t>(*eos);
 }
 
@@ -40,6 +44,7 @@ uint32_t Engine::inference(ChatSession& session) {
         throw std::length_error("Chat session cache capacity exceeded");
     if (offset >= session.tokens.size())
         throw std::invalid_argument("Inference requires uncached tokens");
+
     const size_t tokens = session.tokens.size() - offset;
     const size_t width = embedlookup.get_embedding_size();
     const size_t heads = gguf.get_attention_head_count().value();
@@ -107,7 +112,6 @@ uint32_t Engine::inference(ChatSession& session) {
     session.cached_tokens += tokens;
     return next;
 }
-
 
 void Engine::append_token(ChatSession& session, uint32_t token) {
     if (token >= embedlookup.get_vocabulary_size())

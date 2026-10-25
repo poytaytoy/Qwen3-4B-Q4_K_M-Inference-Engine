@@ -14,7 +14,8 @@ public:
     EmbedLookup(EmbedLookup&& other) noexcept;
     EmbedLookup& operator=(EmbedLookup&& other) noexcept;
 
-    // One FP32 embedding per input ID, contiguous in input order.
+    // Copies selected packed rows to the GPU and dequantizes them to FP32.
+    // One embedding per input ID, contiguous in input order.
     // Result shape: [token_ids.size(), get_embedding_size()].
     DeviceBuffer lookup(const std::vector<uint32_t>& token_ids) const;
     size_t get_embedding_size() const { return embedding_size_; }
@@ -23,10 +24,6 @@ public:
     size_t get_row_bytes() const { return row_bytes_; }
 
 private:
-    // source points to row_bytes_ stored bytes; output has embedding_size_ slots.
-    void dequantize_row_fp32(const std::byte* source, float* output) const;
-    void dequantize_row_q4k(const std::byte* source, float* output) const;
-    void dequantize_row_q6k(const std::byte* source, float* output) const;
     ggml_type type_{GGML_TYPE_COUNT};
     std::vector<std::byte> table_;
     size_t embedding_size_{0};

@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <cuda_runtime.h>
 #include <string>
 #include <vector>
 #include "GGUF.hpp"
@@ -8,9 +9,10 @@ struct DeviceBuffer{
     void* data{nullptr};
     std::size_t bytes{0};
 
-    // Allocates device memory and copies bytes from a host pointer.
-    DeviceBuffer(const void* source, std::size_t bytes);
-    explicit DeviceBuffer(std::size_t bytes);
+    cudaStream_t stream{nullptr};
+
+    DeviceBuffer(const void* source, std::size_t bytes, cudaStream_t stream = nullptr);
+    explicit DeviceBuffer(std::size_t bytes, cudaStream_t stream = nullptr);
     ~DeviceBuffer();
     
     DeviceBuffer(const DeviceBuffer& other) = delete; 
